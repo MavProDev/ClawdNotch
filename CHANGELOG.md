@@ -1,5 +1,30 @@
 # Changelog
 
+## [3.1.0] - 2026-03-31
+
+### Deep Dive Audit — 9 fixes, 18 new tests, 8 files changed
+
+#### Security
+- **DPAPI encryption** for API keys at rest — keys stored as encrypted blobs in config.json using Windows CryptProtectData. Zero new dependencies. Existing plaintext keys auto-migrated on startup.
+
+#### Performance
+- **Adaptive tick rate** — overlay drops from 30fps to 10fps when collapsed and idle, saving CPU. Ramps back to 30fps during animation or active sessions.
+- **Font caching** — 13 QFont objects cached as class constants. Eliminates ~900 QFont allocations/second during paint.
+- **ConfigManager lock scope** — file I/O now happens outside the threading lock, preventing potential UI thread blocks on slow disks.
+
+#### Features
+- **Real per-session token tracking** — context bar now shows actual token counts from Claude Code JSONL files (not rough estimates). JSONL filenames correlate directly with session IDs.
+- **Toast restacking** — dismissing a toast smoothly repositions remaining toasts to close the gap instead of leaving a dead space.
+- **Settings QScrollArea** — Settings dialog now scrollable on 1080p screens. Custom styled scrollbar matches dark theme.
+
+#### Architecture
+- **PS1 template extraction** — PowerShell hook script moved from embedded f-string to `claude_notch_hook.ps1.template`. Now lintable, testable, and debuggable independently.
+- **Event handler dict dispatch** — `SessionManager.handle_event` refactored from 70-line if/elif chain to method dispatch via dict lookup. Cleaner, more extensible.
+- **Safer hook merge** — settings.json cleanup now checks the `command` field specifically instead of string-matching entire hook dicts.
+
+#### Tests
+- 18 new tests (68 total): TokenAggregator JSONL parsing, per-session lookup, caching, DPAPI encrypt/decrypt roundtrip, ClawdToast lifecycle/stacking/restack, check_for_updates with mocked HTTP.
+
 ## [3.0.0] - 2026-03-30
 
 ### Architecture

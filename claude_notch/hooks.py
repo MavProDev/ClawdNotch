@@ -41,6 +41,7 @@ class HookServer(QThread):
             srv.bind(("127.0.0.1", self.port))
         except OSError as e:
             print(f"[HookServer] Port {self.port} in use: {e}")
+            srv.close()
             return
         srv.listen(32)
         srv.settimeout(1.0)
@@ -98,17 +99,18 @@ def install_hooks(port=HOOK_SERVER_PORT):
 
     BUG FIX #9: The final write to ~/.claude/settings.json now uses
     atomic write (tempfile + os.replace) instead of plain open("w").
+
+    The PowerShell hook script is loaded from a .ps1.template file
+    (lintable, testable) rather than an embedded f-string.
     """
     hd = CONFIG_DIR / "hooks"; hd.mkdir(parents=True, exist_ok=True)
-    (hd / "claude_notch_hook.ps1").write_text(f'''param([string]$EventType = "Unknown")
-$ij=[Console]::In.ReadToEnd()
-$p=$ij|ConvertFrom-Json -EA SilentlyContinue
-$et=$EventType
-$up=""; if($p.user_prompt){{$up=$p.user_prompt.ToString().Substring(0,[Math]::Min($p.user_prompt.ToString().Length,500))}}
-$ti=""; if($p.tool_input){{try{{$ti=($p.tool_input|ConvertTo-Json -Compress -Depth 3).Substring(0,[Math]::Min(($p.tool_input|ConvertTo-Json -Compress -Depth 3).Length,4096))}}catch{{}}}}
-$pl=@{{event=$et;session_id=if($p.session_id){{$p.session_id}}else{{$env:CLAUDE_SESSION_ID}};project_dir=$env:CLAUDE_PROJECT_DIR;tool_name=if($p.tool_name){{$p.tool_name}}else{{""}};user_prompt=$up;tool_input=$ti;timestamp=(Get-Date -Format "o")}}|ConvertTo-Json -Compress
-try{{$c=New-Object System.Net.Sockets.TcpClient;$c.Connect("127.0.0.1",{port});$s=$c.GetStream();$b=[Text.Encoding]::UTF8.GetBytes($pl+"`n");$s.Write($b,0,$b.Length);$s.Flush();Start-Sleep -Ms 50;$c.Close()}}catch{{}}
-exit 0''', encoding="utf-8")
+    # Load PS1 template from package directory
+    template_path = Path(__file__).parent / "claude_notch_hook.ps1.template"
+    if not template_path.exists():
+        print(f"[Hooks] Template not found: {template_path}", file=sys.stderr)
+        return
+    ps1_content = template_path.read_text(encoding="utf-8").replace("{{PORT}}", str(port))
+    (hd / "claude_notch_hook.ps1").write_text(ps1_content, encoding="utf-8")
     sp = Path.home() / ".claude" / "settings.json"; sp.parent.mkdir(parents=True, exist_ok=True)
     settings = {}
     if sp.exists():
@@ -122,8 +124,14 @@ exit 0''', encoding="utf-8")
         cmd = f'{base_cmd} -EventType {ev}'
         hook = {"type": "command", "command": cmd, "timeout": 3000}
         if ev not in settings["hooks"]: settings["hooks"][ev] = []
-        # Remove old entries without -EventType, then add fixed version
-        settings["hooks"][ev] = [h for h in settings["hooks"][ev] if "claude_notch_hook" not in str(h)]
+        # Remove old ClawdNotch entries — check command field specifically, not the whole dict
+        def _is_our_hook(h):
+            if isinstance(h, dict):
+                for h_entry in h.get("hooks", []):
+                    if isinstance(h_entry, dict) and "claude_notch_hook" in h_entry.get("command", ""):
+                        return True
+            return False
+        settings["hooks"][ev] = [h for h in settings["hooks"][ev] if not _is_our_hook(h)]
         settings["hooks"][ev].append({"hooks": [hook]})
     # BUG FIX #9: Atomic write — use tempfile + os.replace instead of plain open("w")
     try:

@@ -10,6 +10,9 @@ import os
 import json
 import tempfile
 import threading
+import base64
+import ctypes
+import ctypes.wintypes
 from pathlib import Path
 from datetime import datetime
 
@@ -186,6 +189,59 @@ def _redact_key(key: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# DPAPI ENCRYPTION  (Windows-only, zero dependencies)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class _DATA_BLOB(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.wintypes.DWORD),
+                ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def _dpapi_encrypt(plaintext: str) -> str:
+    """Encrypt a string using Windows DPAPI. Returns base64-encoded ciphertext.
+
+    DPAPI ties encryption to the current Windows user account — only the same
+    user on the same machine can decrypt. No key management needed.
+    Falls back to plaintext on non-Windows or if DPAPI fails.
+    """
+    try:
+        data = plaintext.encode("utf-8")
+        blob_in = _DATA_BLOB(len(data), ctypes.cast(ctypes.create_string_buffer(data, len(data)),
+                                                      ctypes.POINTER(ctypes.c_char)))
+        blob_out = _DATA_BLOB()
+        if ctypes.windll.crypt32.CryptProtectData(
+            ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
+        ):
+            encrypted = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+            ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+            return "dpapi:" + base64.b64encode(encrypted).decode("ascii")
+    except Exception:
+        pass
+    return plaintext  # fallback: return as-is
+
+
+def _dpapi_decrypt(stored: str) -> str:
+    """Decrypt a DPAPI-encrypted string. If not encrypted (no dpapi: prefix), returns as-is."""
+    if not stored.startswith("dpapi:"):
+        return stored
+    try:
+        encrypted = base64.b64decode(stored[6:])
+        blob_in = _DATA_BLOB(len(encrypted), ctypes.cast(
+            ctypes.create_string_buffer(encrypted, len(encrypted)),
+            ctypes.POINTER(ctypes.c_char)))
+        blob_out = _DATA_BLOB()
+        if ctypes.windll.crypt32.CryptUnprotectData(
+            ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
+        ):
+            plaintext = ctypes.string_at(blob_out.pbData, blob_out.cbData).decode("utf-8")
+            ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+            return plaintext
+    except Exception:
+        pass
+    return stored  # fallback: return as-is (may be corrupted)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CONFIG MANAGER  (BUG FIX #1: thread-safe with threading.Lock)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -205,7 +261,7 @@ class ConfigManager:
         self._dirty = False
 
     def _migrate(self):
-        """Migrate old single-key config to multi-key format and remove dead keys."""
+        """Migrate old single-key config to multi-key format, remove dead keys, encrypt API keys."""
         changed = False
 
         # Migrate old single anthropic_api_key -> api_keys list
@@ -222,6 +278,13 @@ class ConfigManager:
             del self.config["notch_opacity"]
             changed = True
 
+        # Encrypt any plaintext API keys with DPAPI
+        for entry in self.config.get("api_keys", []):
+            key = entry.get("key", "")
+            if key and not key.startswith("dpapi:"):
+                entry["key"] = _dpapi_encrypt(key)
+                changed = True
+
         if changed:
             self.save()
 
@@ -236,8 +299,9 @@ class ConfigManager:
 
     def save(self):
         with self._lock:
-            _atomic_write(CONFIG_FILE, self.config)
+            snapshot = dict(self.config)
             self._dirty = False
+        _atomic_write(CONFIG_FILE, snapshot)
 
     def get(self, key, default=None):
         with self._lock:
@@ -247,19 +311,36 @@ class ConfigManager:
         with self._lock:
             self.config[key] = value
             if save_now:
-                _atomic_write(CONFIG_FILE, self.config)
+                snapshot = dict(self.config)
                 self._dirty = False
             else:
                 self._dirty = True
+                snapshot = None
+        if snapshot is not None:
+            _atomic_write(CONFIG_FILE, snapshot)
 
     def set_many(self, updates):
         with self._lock:
             self.config.update(updates)
-            _atomic_write(CONFIG_FILE, self.config)
+            snapshot = dict(self.config)
             self._dirty = False
+        _atomic_write(CONFIG_FILE, snapshot)
+
+    def get_api_keys_decrypted(self) -> list:
+        """Return api_keys list with keys decrypted from DPAPI."""
+        with self._lock:
+            result = []
+            for entry in self.config.get("api_keys", []):
+                result.append({
+                    **entry,
+                    "key": _dpapi_decrypt(entry.get("key", "")),
+                })
+            return result
 
     def flush(self):
         with self._lock:
-            if self._dirty:
-                _atomic_write(CONFIG_FILE, self.config)
-                self._dirty = False
+            if not self._dirty:
+                return
+            snapshot = dict(self.config)
+            self._dirty = False
+        _atomic_write(CONFIG_FILE, snapshot)

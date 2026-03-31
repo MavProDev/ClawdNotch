@@ -75,6 +75,12 @@ class NotificationManager:
         if not self.config.get("dnd_mode"):
             self._show_clawd_toast("Claude Notch — Budget", message, 10, 0, "budget")
 
+    def notify_achievement(self, message):
+        if self.history and self.config.get("notification_history_enabled", True):
+            self.history.add("Achievement", message, "completion")
+        if not self.config.get("dnd_mode"):
+            self._show_clawd_toast("Achievement Unlocked!", message, 8, 0, "completion")
+
     def _show_clawd_toast(self, title, message, timeout, pid, ntype):
         """Show a ClawdToast on the main thread. Safe to call from any thread."""
         from PyQt6.QtCore import QTimer

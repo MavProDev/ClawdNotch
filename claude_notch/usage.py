@@ -195,7 +195,9 @@ class UsagePoller(QThread):
         poll_count = 0
         while self._running:
             poll_count += 1
-            api_keys = list(self.config.get("api_keys", []))  # snapshot the list
+            api_keys = (self.config.get_api_keys_decrypted()
+                        if hasattr(self.config, 'get_api_keys_decrypted')
+                        else list(self.config.get("api_keys", [])))
             if api_keys:
                 results = []
                 for i, entry in enumerate(api_keys):
@@ -495,7 +497,13 @@ def export_usage_report(tracker, config, fmt="markdown"):
         desktop = Path.home()  # last-resort fallback
 
     out = desktop / f"claude-notch-report-{ts}.{ext}"
-    out.write_text(content, encoding="utf-8")
+    try:
+        out.write_text(content, encoding="utf-8")
+    except (OSError, PermissionError) as e:
+        print(f"[Export] Failed to write report: {e}", file=sys.stderr)
+        # Fall back to home directory
+        out = Path.home() / f"claude-notch-report-{ts}.{ext}"
+        out.write_text(content, encoding="utf-8")
     return str(out)
 
 
@@ -523,6 +531,7 @@ class TokenAggregator:
     def __init__(self, cache_ttl_seconds=30):
         self._lock = threading.Lock()
         self._cache = {}       # {"2026-03-30": {"input": N, "output": N, "cache_read": N, "cache_write": N, "total": N}}
+        self._session_cache = {}  # {session_id: {"input": N, ..., "_ts": float}}
         self._last_scan = 0.0
         self._ttl = cache_ttl_seconds
 
@@ -542,6 +551,48 @@ class TokenAggregator:
             return dict(self._cache.get(date_str, {
                 "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0
             }))
+
+    def get_session(self, session_id: str) -> dict:
+        """Get real token usage for a specific session.
+
+        Claude Code stores each session's data in a JSONL file named after
+        the session ID: ~/.claude/projects/{hash}/{session_id}.jsonl
+        This method scans all project dirs for a matching filename.
+        """
+        if not session_id or not self.CLAUDE_PROJECTS_DIR.exists():
+            return {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0}
+
+        # Check per-session cache first
+        with self._lock:
+            cached = self._session_cache.get(session_id)
+            if cached is not None:
+                now = time.time()
+                if now - cached.get("_ts", 0) < self._ttl:
+                    return {k: v for k, v in cached.items() if k != "_ts"}
+
+        result = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0}
+        try:
+            for project_dir in self.CLAUDE_PROJECTS_DIR.iterdir():
+                if not project_dir.is_dir():
+                    continue
+                jsonl_file = project_dir / f"{session_id}.jsonl"
+                if jsonl_file.exists():
+                    acc = {}
+                    self._parse_jsonl(jsonl_file, acc)
+                    # Sum across all dates for this session
+                    for day_data in acc.values():
+                        result["input"] += day_data.get("input", 0)
+                        result["output"] += day_data.get("output", 0)
+                        result["cache_read"] += day_data.get("cache_read", 0)
+                        result["cache_write"] += day_data.get("cache_write", 0)
+                        result["total"] += day_data.get("total", 0)
+                    break  # found the session file, done
+        except Exception:
+            pass
+
+        with self._lock:
+            self._session_cache[session_id] = {**result, "_ts": time.time()}
+        return result
 
     def get_month_total(self) -> int:
         """Get total tokens for the current calendar month."""
@@ -665,7 +716,6 @@ def check_for_updates(config, on_update_available=None):
     today = datetime.now().strftime("%Y-%m-%d")
     if config.get("last_update_check") == today:
         return
-    config.set("last_update_check", today)
 
     try:
         resp = requests.get(
@@ -673,6 +723,8 @@ def check_for_updates(config, on_update_available=None):
             timeout=10,
             headers={"Accept": "application/vnd.github.v3+json"},
         )
+        # Mark as checked only after a successful HTTP response (any status)
+        config.set("last_update_check", today)
         if resp.status_code != 200:
             return
         data = resp.json()
@@ -683,7 +735,7 @@ def check_for_updates(config, on_update_available=None):
             if on_update_available:
                 on_update_available(latest_tag, latest_url)
     except Exception:
-        pass  # network error, no big deal
+        pass  # network error — will retry next startup
 
 
 def open_release_page(url: str):

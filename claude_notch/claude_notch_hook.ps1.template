@@ -1,0 +1,9 @@
+param([string]$EventType = "Unknown")
+$ij=[Console]::In.ReadToEnd()
+$p=$ij|ConvertFrom-Json -EA SilentlyContinue
+$et=$EventType
+$up=""; if($p.user_prompt){$up=$p.user_prompt.ToString().Substring(0,[Math]::Min($p.user_prompt.ToString().Length,500))}
+$ti=""; if($p.tool_input){try{$ti=($p.tool_input|ConvertTo-Json -Compress -Depth 3).Substring(0,[Math]::Min(($p.tool_input|ConvertTo-Json -Compress -Depth 3).Length,4096))}catch{}}
+$pl=@{event=$et;session_id=if($p.session_id){$p.session_id}else{$env:CLAUDE_SESSION_ID};project_dir=$env:CLAUDE_PROJECT_DIR;tool_name=if($p.tool_name){$p.tool_name}else{""};user_prompt=$up;tool_input=$ti;timestamp=(Get-Date -Format "o")}|ConvertTo-Json -Compress
+try{$c=New-Object System.Net.Sockets.TcpClient;$c.Connect("127.0.0.1",{{PORT}});$s=$c.GetStream();$b=[Text.Encoding]::UTF8.GetBytes($pl+"`n");$s.Write($b,0,$b.Length);$s.Flush();Start-Sleep -Ms 50;$c.Close()}catch{}
+exit 0

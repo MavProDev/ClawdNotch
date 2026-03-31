@@ -19,8 +19,19 @@ import subprocess
 import os
 import sys
 import time
+import threading
 
 from claude_notch.config import CONFIG_DIR, LOCK_FILE
+
+# ---------------------------------------------------------------------------
+# Shared ctypes callback type for EnumWindows (used by multiple functions)
+# ---------------------------------------------------------------------------
+
+WNDENUMPROC = ctypes.WINFUNCTYPE(
+    ctypes.c_bool,
+    ctypes.wintypes.HWND,
+    ctypes.wintypes.LPARAM,
+)
 
 # ---------------------------------------------------------------------------
 # Conditional imports
@@ -40,6 +51,7 @@ except ImportError:
 _cached_claude_processes: list = []
 _cached_claude_processes_ts: float = 0.0
 _PROCESS_CACHE_TTL: float = 10.0  # seconds
+_process_cache_lock = threading.Lock()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -155,14 +167,6 @@ def _find_claude_windows() -> list:
         "code.exe", "cursor.exe", "windsurf.exe",  # IDE integrated terminals
     }
     try:
-        # BUG FIX #5: Use proper HWND / LPARAM types so 64-bit handles
-        # are not truncated on 64-bit Windows.
-        WNDENUMPROC = ctypes.WINFUNCTYPE(
-            ctypes.c_bool,
-            ctypes.wintypes.HWND,
-            ctypes.wintypes.LPARAM,
-        )
-
         def callback(hwnd, _):
             try:
                 if not ctypes.windll.user32.IsWindowVisible(hwnd):
@@ -221,8 +225,9 @@ def _find_claude_processes() -> list:
     global _cached_claude_processes, _cached_claude_processes_ts
 
     now = time.monotonic()
-    if now - _cached_claude_processes_ts < _PROCESS_CACHE_TTL:
-        return list(_cached_claude_processes)  # return a copy
+    with _process_cache_lock:
+        if now - _cached_claude_processes_ts < _PROCESS_CACHE_TTL:
+            return list(_cached_claude_processes)
 
     results = []
     try:
@@ -241,9 +246,9 @@ def _find_claude_processes() -> list:
     except Exception as e:
         print(f"[ProcessScan] PowerShell process scan failed: {e}", file=sys.stderr)
 
-    # Update cache
-    _cached_claude_processes = list(results)
-    _cached_claude_processes_ts = now
+    with _process_cache_lock:
+        _cached_claude_processes = list(results)
+        _cached_claude_processes_ts = now
     return results
 
 
@@ -251,13 +256,6 @@ def _focus_window_by_pid(pid):
     """Bring the window belonging to a PID to the foreground."""
     try:
         target_hwnd = None
-        # BUG FIX #5: Use proper HWND / LPARAM types so 64-bit handles
-        # are not truncated on 64-bit Windows.
-        WNDENUMPROC = ctypes.WINFUNCTYPE(
-            ctypes.c_bool,
-            ctypes.wintypes.HWND,
-            ctypes.wintypes.LPARAM,
-        )
 
         def callback(hwnd, _):
             nonlocal target_hwnd

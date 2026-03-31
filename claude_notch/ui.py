@@ -21,7 +21,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
     QSystemTrayIcon, QMenu, QLineEdit, QPushButton, QDialog, QCheckBox,
-    QComboBox, QFileDialog,
+    QComboBox, QFileDialog, QScrollArea,
 )
 from PyQt6.QtCore import Qt, QTimer, QPoint, QRectF, pyqtSignal
 from PyQt6.QtGui import (
@@ -32,6 +32,7 @@ from PyQt6.QtGui import (
 from claude_notch import __version__
 from claude_notch.config import (
     C, THEMES, HOOK_SERVER_PORT, SPINNER_FRAMES, apply_theme, _redact_key,
+    _dpapi_encrypt,
 )
 from claude_notch.hooks import install_hooks
 from claude_notch.usage import (
@@ -71,6 +72,11 @@ EMOTION_STYLES = {
 # ═══════════════════════════════════════════════════════════════════════════════
 # STATUS COLORS
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def _with_alpha(color, alpha):
+    """Return a copy of a QColor with the given alpha (0-255)."""
+    return QColor(color.red(), color.green(), color.blue(), alpha)
+
 
 def _status_colors():
     """Build status colors from current theme. Called at paint time so theme changes apply."""
@@ -144,8 +150,18 @@ class SettingsDialog(QDialog):
             "QRadioButton{color:#f0ece8;font-size:12px;spacing:8px;}"
             "QPushButton{background:#d97757;color:white;border:none;padding:10px 20px;border-radius:6px;font-weight:bold;font-size:13px;}"
             "QPushButton:hover{background:#eb9b78;}"
+            "QScrollArea{border:none;background:transparent;}"
+            "QScrollBar:vertical{background:#1c1c24;width:8px;border-radius:4px;}"
+            "QScrollBar::handle:vertical{background:#3c3c4c;border-radius:4px;min-height:20px;}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
         )
-        L = QVBoxLayout(self)
+        # Wrap all content in a QScrollArea for 1080p screen support
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        L = QVBoxLayout(container)
         L.setSpacing(8)
         L.setContentsMargins(24, 20, 24, 20)
 
@@ -386,6 +402,10 @@ class SettingsDialog(QDialog):
         br.addWidget(sb)
         L.addLayout(br)
 
+        # Finalize scroll area
+        scroll.setWidget(container)
+        outer.addWidget(scroll)
+
     def _add_key_row(self, label: str, key: str, added: str = ""):
         """Add a key display row with remove button."""
         row = QHBoxLayout()
@@ -502,7 +522,8 @@ class SettingsDialog(QDialog):
                 return default
         sub_mode = "max" if self.rb_max.isChecked() else "api"
         api_keys = [
-            {"key": r["key"], "label": r["label"], "added": r.get("added", "")}
+            {"key": _dpapi_encrypt(r["key"]) if not r["key"].startswith("dpapi:") else r["key"],
+             "label": r["label"], "added": r.get("added", "")}
             for r in self._key_rows if r is not None
         ]
         self.config.set_many({
@@ -633,6 +654,11 @@ class ClawdToast(QWidget):
 
         elif self._phase == "visible":
             self._visible_timer_count += 1
+            # Smoothly slide to target position (handles restack after dismiss)
+            cur_y = self.pos().y()
+            if abs(cur_y - self._target_y) > 1:
+                new_y = cur_y + int((self._target_y - cur_y) * 0.15)
+                self.move(self._target_x, new_y)
             # Auto-dismiss after timeout (at 60fps)
             if self._visible_timer_count > self._timeout * 60:
                 self._phase = "fade_out"
@@ -646,12 +672,30 @@ class ClawdToast(QWidget):
 
         self.update()
 
+    def __del__(self):
+        """Safety net: remove from active list if widget is garbage collected without _dismiss."""
+        if self in ClawdToast._active_toasts:
+            ClawdToast._active_toasts.remove(self)
+
     def _dismiss(self):
         self._timer.stop()
         if self in ClawdToast._active_toasts:
             ClawdToast._active_toasts.remove(self)
+            # Reposition remaining toasts to close the gap
+            ClawdToast._restack()
         self.close()
         self.deleteLater()
+
+    @staticmethod
+    def _restack():
+        """Reposition all active toasts so there are no gaps after a dismiss."""
+        screen = QApplication.primaryScreen()
+        if not screen:
+            return
+        scr = screen.geometry()
+        for i, toast in enumerate(ClawdToast._active_toasts):
+            toast._target_y = scr.y() + scr.height() - 88 - 16 - i * 96
+            toast._target_x = scr.x() + scr.width() - 340 - 16
 
     def mousePressEvent(self, e):
         if self._pid:
@@ -680,7 +724,7 @@ class ClawdToast(QWidget):
         # Subtle outer glow
         glow_alpha = int(30 + 20 * math.sin(self._pulse * 2))
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(QColor(border_color.red(), border_color.green(), border_color.blue(), glow_alpha), 3.0))
+        p.setPen(QPen(_with_alpha(border_color, glow_alpha), 3.0))
         p.drawPath(path)
         # Crisp inner border
         p.setPen(QPen(border_color, 1.2))
@@ -745,6 +789,13 @@ class SplashScreen(QWidget):
     """Terminal-style boot splash. Shows on every launch. Skippable."""
 
     finished = pyqtSignal()  # emitted when splash should close and notch should show
+
+    # Cached fonts — avoid re-allocating every paint frame
+    _FS24B = QFont("Segoe UI", 24, QFont.Weight.Bold)
+    _FS10 = QFont("Segoe UI", 10)
+    _FS12B = QFont("Segoe UI", 12, QFont.Weight.Bold)
+    _FS9 = QFont("Segoe UI", 9)
+    _FC10 = QFont("Consolas", 10)
 
     LOADING_LINES = [
         "Initializing hook server on :19748...",
@@ -882,7 +933,7 @@ class SplashScreen(QWidget):
 
         # Border glow
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(QColor(C["coral"].red(), C["coral"].green(), C["coral"].blue(), 60), 2.0))
+        p.setPen(QPen(_with_alpha(C["coral"], 60), 2.0))
         p.drawPath(path)
         p.setPen(QPen(C["coral"], 1.0))
         p.drawPath(path)
@@ -897,17 +948,17 @@ class SplashScreen(QWidget):
 
         # Title
         p.setPen(QPen(C["coral"]))
-        p.setFont(QFont("Segoe UI", 24, QFont.Weight.Bold))
+        p.setFont(self._FS24B)
         p.drawText(0, 85, w, 40, Qt.AlignmentFlag.AlignCenter, "ClawdNotch")
 
         # Version
         from claude_notch import __version__
         p.setPen(QPen(C["text_lo"]))
-        p.setFont(QFont("Segoe UI", 10))
+        p.setFont(self._FS10)
         p.drawText(0, 118, w, 20, Qt.AlignmentFlag.AlignCenter, f"v{__version__}")
 
         # Loading lines (terminal style)
-        p.setFont(QFont("Consolas", 10))
+        p.setFont(self._FC10)
         y = 150
         for line in self._visible_lines:
             # Bracket char in coral, rest in text_md
@@ -933,16 +984,16 @@ class SplashScreen(QWidget):
             p.setPen(Qt.PenStyle.NoPen)
             p.drawRoundedRect(QRectF(btn_x, btn_y, btn_w, btn_h), 8, 8)
             p.setPen(QPen(QColor(255, 255, 255)))
-            p.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+            p.setFont(self._FS12B)
             p.drawText(btn_x, btn_y, btn_w, btn_h, Qt.AlignmentFlag.AlignCenter, "Install Hooks & Start")
 
             p.setPen(QPen(C["text_lo"]))
-            p.setFont(QFont("Segoe UI", 9))
+            p.setFont(self._FS9)
             p.drawText(0, 330, w, 20, Qt.AlignmentFlag.AlignCenter, "Skip")
 
         # Contact line (always visible)
         p.setPen(QPen(C["text_lo"]))
-        p.setFont(QFont("Segoe UI", 9))
+        p.setFont(self._FS9)
         p.drawText(0, h - 28, w, 18, Qt.AlignmentFlag.AlignCenter,
                    "@ReelDad  \u00b7  MavProGroup@gmail.com  \u00b7  Bugs? Ideas? Don't hesitate to reach out.")
 
@@ -963,6 +1014,24 @@ class ClaudeNotch(QWidget):
     RESIZE_MARGIN = 8   # pixels from edge for resize handle detection
     MIN_EW, MIN_EH = 440, 400
     MAX_EW, MAX_EH = 900, 900
+
+    # Cached fonts — avoid re-allocating QFont objects every paint frame
+    _F7 = QFont("Segoe UI", 7)
+    _F7B = QFont("Segoe UI", 7, QFont.Weight.Bold)
+    _F8 = QFont("Segoe UI", 8)
+    _F8B = QFont("Segoe UI", 8, QFont.Weight.Bold)
+    _F9 = QFont("Segoe UI", 9)
+    _F9B = QFont("Segoe UI", 9, QFont.Weight.DemiBold)
+    _F10 = QFont("Segoe UI", 10)
+    _F10B = QFont("Segoe UI", 10, QFont.Weight.DemiBold)
+    _F11 = QFont("Segoe UI", 11)
+    _F14B = QFont("Segoe UI", 14, QFont.Weight.DemiBold)
+    _F18B = QFont("Segoe UI", 18, QFont.Weight.Bold)
+    _FC8 = QFont("Consolas", 8)
+    _FC10 = QFont("Consolas", 10)
+
+    TICK_IDLE = 100    # 10fps when collapsed + no active sessions
+    TICK_ACTIVE = 33   # 30fps when animating or sessions active
 
     def __init__(self, sessions, config, tracker, emotion_engine=None,
                  todo_manager=None, sparkline=None, notif_history=None, streaks=None,
@@ -999,7 +1068,10 @@ class ClaudeNotch(QWidget):
         self._edge = "top"
         self._anchor_pos = QPoint(0, 0)
         self._usage_keys = []  # list of per-key status dicts from UsagePoller
+        self._hover_row_idx = -1  # index of session row under cursor
+        self._settings_btn_rect = QRectF(0, 0, 0, 0)
 
+        self.setMouseTracking(True)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -1214,6 +1286,12 @@ class ClaudeNotch(QWidget):
         if abs(self._current_opacity - self._target_opacity) > 0.01:
             self._current_opacity += (self._target_opacity - self._current_opacity) * 0.05
             self.setWindowOpacity(self._current_opacity)
+        # Adaptive tick rate: 30fps when active/expanded, 10fps when idle+collapsed
+        needs_fast = (self._expanded or self._at.isActive()
+                      or self.sessions.any_working or self.sessions.any_waiting)
+        target_interval = self.TICK_ACTIVE if needs_fast else self.TICK_IDLE
+        if self._tt.interval() != target_interval:
+            self._tt.setInterval(target_interval)
         self.update()
 
     def _animate(self):
@@ -1327,6 +1405,9 @@ class ClaudeNotch(QWidget):
                 if self._export_btn_rect.contains(e.pos().x(), e.pos().y()):
                     self._do_export()
                     return
+                if self._settings_btn_rect.contains(e.pos().x(), e.pos().y()):
+                    self._open_settings()
+                    return
                 # Click-to-focus or clipboard on session row
                 for rect, sess in self._session_click_rects:
                     if rect.contains(e.pos().x(), e.pos().y()):
@@ -1375,6 +1456,15 @@ class ClaudeNotch(QWidget):
                 self.setFixedSize(self.nw, self.nh)
             self.update()
         elif self._expanded and self._anim_p >= 1.0:
+            # Track hovered session row for highlight
+            old_hover = self._hover_row_idx
+            self._hover_row_idx = -1
+            for i, (rect, _sess) in enumerate(self._session_click_rects):
+                if rect.contains(e.pos().x(), e.pos().y()):
+                    self._hover_row_idx = i
+                    break
+            if old_hover != self._hover_row_idx:
+                self.update()
             # Update cursor for resize edges
             edges = self._resize_edge_at(e.pos())
             if edges:
@@ -1435,10 +1525,21 @@ class ClaudeNotch(QWidget):
                     creationflags=0x08000000,
                 )
                 if check.returncode == 0:
-                    subprocess.Popen(
-                        ["cmd", "/c", "start", "cmd", "/k", "claude"],
-                        creationflags=0x00000008,
+                    # Try Windows Terminal first (nicer UX), fall back to cmd.exe
+                    wt_check = subprocess.run(
+                        ["where", "wt"], capture_output=True, timeout=3,
+                        creationflags=0x08000000,
                     )
+                    if wt_check.returncode == 0:
+                        subprocess.Popen(
+                            ["wt", "new-tab", "cmd", "/k", "claude"],
+                            creationflags=0x00000008,
+                        )
+                    else:
+                        subprocess.Popen(
+                            ["cmd", "/c", "start", "cmd", "/k", "claude"],
+                            creationflags=0x00000008,
+                        )
             except Exception:
                 pass
 
@@ -1501,6 +1602,22 @@ class ClaudeNotch(QWidget):
         fmt = self.config.get("export_format", "markdown")
         path = export_usage_report(self.tracker, self.config, fmt)
         show_clawd_toast("Export Complete", f"Saved: {Path(path).name}", 5, 0, "completion")
+
+    def _open_settings(self):
+        """Open settings dialog from the expanded panel footer."""
+        if hasattr(self, '_settings_dlg') and self._settings_dlg and self._settings_dlg.isVisible():
+            self._settings_dlg.raise_()
+            self._settings_dlg.activateWindow()
+            return
+        dlg = SettingsDialog(self.config)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+        scr = QApplication.primaryScreen().geometry()
+        dlg.resize(520, min(700, scr.height() - 100))
+        dlg.move(scr.x() + (scr.width() - dlg.width()) // 2,
+                 scr.y() + (scr.height() - dlg.height()) // 2)
+        dlg.show()
+        self._settings_dlg = dlg
 
     def _eye_shift(self):
         try:
@@ -1605,15 +1722,15 @@ class ClaudeNotch(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         p.drawPath(path)
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(QColor(C["coral"].red(), C["coral"].green(), C["coral"].blue(), 40), 3.0))
+        p.setPen(QPen(_with_alpha(C["coral"], 40), 3.0))
         p.drawPath(path)
         p.setPen(QPen(C["coral"], 1.0))
         p.drawPath(path)
         if t > 0.2:
             a = min(255, int(t * 300))
-            c1 = QColor(C["coral"].red(), C["coral"].green(), C["coral"].blue(), 0)
-            c2 = QColor(C["coral"].red(), C["coral"].green(), C["coral"].blue(), a)
-            c3 = QColor(C["coral_light"].red(), C["coral_light"].green(), C["coral_light"].blue(), a)
+            c1 = _with_alpha(C["coral"], 0)
+            c2 = _with_alpha(C["coral"], a)
+            c3 = _with_alpha(C["coral_light"], a)
             if e == "left":
                 g = QLinearGradient(1, 20, 1, h - 20)
                 g.setColorAt(0, c1); g.setColorAt(0.3, c2); g.setColorAt(0.7, c3); g.setColorAt(1, c1)
@@ -1646,8 +1763,8 @@ class ClaudeNotch(QWidget):
         if glow_alpha > 3:
             cx, cy = w / 2, h / 2
             grad = QConicalGradient(cx, cy, (self._pulse * 20) % 360)
-            gc1 = QColor(C["coral"].red(), C["coral"].green(), C["coral"].blue(), glow_alpha)
-            gc2 = QColor(C["coral_light"].red(), C["coral_light"].green(), C["coral_light"].blue(), glow_alpha)
+            gc1 = _with_alpha(C["coral"], glow_alpha)
+            gc2 = _with_alpha(C["coral_light"], glow_alpha)
             grad.setColorAt(0.0, gc1); grad.setColorAt(0.25, gc2)
             grad.setColorAt(0.5, gc1); grad.setColorAt(0.75, gc2)
             grad.setColorAt(1.0, gc1)
@@ -1698,6 +1815,34 @@ class ClaudeNotch(QWidget):
             p, cx, cy, ps, b, tint, ex, ey, emotion,
             eye_glow=is_working, glow_phase=self._pulse,
         )
+        # Mood particles — tiny hearts (happy) or rain drops (sad/sob)
+        if emotion in ("happy", "sad", "sob"):
+            p.save()
+            clawd_cx = cx + 5.5 * ps
+            clawd_top = cy
+            for i in range(3):
+                seed = self._pulse * 0.8 + i * 2.1
+                phase = (seed % 3.0) / 3.0  # 0→1 cycle
+                px = clawd_cx + math.sin(seed * 1.7 + i) * 6
+                py = clawd_top - phase * 18 - 2
+                alpha = int(180 * (1 - phase))
+                if emotion == "happy":
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(QBrush(QColor(235, 100, 120, alpha)))
+                    # Tiny heart: two overlapping circles + triangle
+                    sz = 1.5 + (1 - phase) * 0.5
+                    p.drawEllipse(QRectF(px - sz, py - sz * 0.5, sz, sz))
+                    p.drawEllipse(QRectF(px, py - sz * 0.5, sz, sz))
+                    tri = QPainterPath()
+                    tri.moveTo(px - sz, py); tri.lineTo(px + sz, py); tri.lineTo(px, py + sz); tri.closeSubpath()
+                    p.drawPath(tri)
+                else:
+                    # Rain drop — simple 2px line
+                    drop_py = clawd_top + phase * 14 + 2
+                    drop_alpha = int(140 * (1 - phase))
+                    p.setPen(QPen(QColor(120, 160, 220, drop_alpha), 1.2))
+                    p.drawLine(int(px), int(drop_py), int(px), int(drop_py + 3))
+            p.restore()
 
     # -- _pcol : paint collapsed overlay --
 
@@ -1719,7 +1864,7 @@ class ClaudeNotch(QWidget):
             if self.sessions.any_working or self.sessions.any_waiting:
                 q = 0.5 + 0.5 * math.sin(self._pulse * 2.5)
                 gr = 3.5 + q * 3
-                p.setBrush(QBrush(QColor(dc.red(), dc.green(), dc.blue(), int(40 + q * 40))))
+                p.setBrush(QBrush(_with_alpha(dc, int(40 + q * 40))))
                 p.setPen(Qt.PenStyle.NoPen)
                 p.drawEllipse(QRectF(dx - gr, dy - gr, gr * 2, gr * 2))
             p.setBrush(QBrush(dc))
@@ -1728,14 +1873,14 @@ class ClaudeNotch(QWidget):
             c = self.sessions.total_active
             if c > 0:
                 p.setPen(QPen(C["text_md"]))
-                p.setFont(QFont("Segoe UI", 7))
+                p.setFont(self._F7)
                 p.drawText(0, 48, self.VW, 14, Qt.AlignmentFlag.AlignCenter, str(c))
         else:
             dx, dy = 48, self.HH // 2
             if self.sessions.any_working or self.sessions.any_waiting:
                 q = 0.5 + 0.5 * math.sin(self._pulse * 2.5)
                 gr = 3.5 + q * 3
-                p.setBrush(QBrush(QColor(dc.red(), dc.green(), dc.blue(), int(40 + q * 40))))
+                p.setBrush(QBrush(_with_alpha(dc, int(40 + q * 40))))
                 p.setPen(Qt.PenStyle.NoPen)
                 p.drawEllipse(QRectF(dx - gr, dy - gr, gr * 2, gr * 2))
             p.setBrush(QBrush(dc))
@@ -1754,9 +1899,8 @@ class ClaudeNotch(QWidget):
             else:
                 tx = "No active sessions"
             # BUG #12 FIX: dynamic truncation using QFontMetrics
-            font = QFont("Segoe UI", 8)
-            p.setFont(font)
-            fm = QFontMetrics(font)
+            p.setFont(self._F8)
+            fm = QFontMetrics(self._F8)
             avail_w = w - 100  # text area starts at x=58, badge needs ~42px from right
             if fm.horizontalAdvance(tx) > avail_w:
                 while len(tx) > 1 and fm.horizontalAdvance(tx + "\u2026") > avail_w:
@@ -1772,7 +1916,7 @@ class ClaudeNotch(QWidget):
                 p.setPen(Qt.PenStyle.NoPen)
                 p.drawEllipse(QRectF(bx - 8, by - 8, 16, 16))
                 p.setPen(QPen(QColor(255, 255, 255)))
-                p.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+                p.setFont(self._F7B)
                 p.drawText(int(bx - 8), int(by - 8), 16, 16,
                            Qt.AlignmentFlag.AlignCenter, str(c))
         p.restore()
@@ -1797,7 +1941,7 @@ class ClaudeNotch(QWidget):
 
         # -- TITLE BAR with session pill + refresh button --
         pr.setPen(QPen(C["text_hi"]))
-        pr.setFont(QFont("Segoe UI", 14, QFont.Weight.DemiBold))
+        pr.setFont(self._F14B)
         pr.drawText(L + 28, top, cw - 28, 26, Qt.AlignmentFlag.AlignLeft, "ClawdNotch")
         ac = self.sessions.get_active_sessions()
 
@@ -1809,7 +1953,7 @@ class ClaudeNotch(QWidget):
         dnd_on = self.config.get("dnd_mode", False)
         pr.setBrush(QBrush(
             QColor(230, 72, 72, 40) if dnd_on
-            else QColor(C["coral"].red(), C["coral"].green(), C["coral"].blue(), 20)
+            else _with_alpha(C["coral"], 20)
         ))
         pr.setPen(QPen(C["red"] if dnd_on else C["coral"], 1.0))
         pr.drawRoundedRect(self._dnd_btn_rect, 6, 6)
@@ -1840,13 +1984,13 @@ class ClaudeNotch(QWidget):
         pr.setPen(QPen(C["coral"], 1.0))
         pr.drawRoundedRect(self._refresh_btn_rect, 6, 6)
         pr.setPen(QPen(C["coral"], 1.5))
-        pr.setFont(QFont("Segoe UI", 11))
+        pr.setFont(self._F11)
         pr.drawText(int(refresh_x), int(refresh_y), int(refresh_sz), int(refresh_sz),
                     Qt.AlignmentFlag.AlignCenter, "\u27f3")
 
         # Session pill
         sc_text = f"{len(ac)} session{'s' if len(ac) != 1 else ''}"
-        pr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        pr.setFont(self._F9B)
         fm = pr.fontMetrics()
         pill_w = fm.horizontalAdvance(sc_text) + 20
         pill_x = refresh_x - pill_w - 8
@@ -1862,16 +2006,21 @@ class ClaudeNotch(QWidget):
 
         # -- SESSIONS with coral accent underline --
         pr.setPen(QPen(C["coral"]))
-        pr.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
-        pr.drawText(L, top, cw, 18, Qt.AlignmentFlag.AlignLeft, "Sessions")
+        pr.setFont(self._F10B)
+        pr.drawText(L, top, cw, 18, Qt.AlignmentFlag.AlignLeft, "\u25C9 Sessions")
         pr.setPen(QPen(C["coral"], 2.0))
-        pr.drawLine(L, top + 18, L + 62, top + 18)
+        pr.drawLine(L, top + 18, L + 75, top + 18)
         top += 24
         avg_min = self.sessions.avg_session_minutes
-        for s in ac[:self.config.get("max_sessions_shown", 6)]:
+        for si, s in enumerate(ac[:self.config.get("max_sessions_shown", 6)]):
             rh = 28
             row_rect = QRectF(L - 4, top - 2, cw + 8, rh + 4)
             self._session_click_rects.append((row_rect, s))
+            # Hover highlight
+            if si == self._hover_row_idx:
+                pr.setBrush(QBrush(QColor(255, 255, 255, 12)))
+                pr.setPen(Qt.PenStyle.NoPen)
+                pr.drawRoundedRect(row_rect, 6, 6)
             if s.state == "waiting":
                 pr.setBrush(QBrush(QColor(217, 119, 87, 25)))
                 pr.setPen(Qt.PenStyle.NoPen)
@@ -1881,13 +2030,13 @@ class ClaudeNotch(QWidget):
             pr.setPen(Qt.PenStyle.NoPen)
             pr.drawEllipse(QRectF(L + 1, top + rh / 2 - 4, 8, 8))
             pr.setPen(QPen(C["text_hi"]))
-            pr.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
+            pr.setFont(self._F10B)
             nm = s.project_name
             nm = nm[:28] + "..." if len(nm) > 30 else nm
             pr.drawText(L + 16, top, int(cw * 0.55), rh,
                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, nm)
             pr.setPen(QPen(C["coral"] if s.state == "waiting" else C["text_lo"]))
-            pr.setFont(QFont("Segoe UI", 9))
+            pr.setFont(self._F9)
             if s.state == "waiting":
                 st = "Needs input!"
             elif s.state == "working":
@@ -1904,35 +2053,67 @@ class ClaudeNotch(QWidget):
             pr.drawText(int(L + cw * 0.55), top, int(cw * 0.45), rh,
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, st)
             top += rh
-            # Context bar
-            ctx_pct = min(1.0, s.session_tokens / max(1, s.context_limit))
+            # Context bar — use real tokens from JSONL if available
+            real_sess = self.token_aggregator.get_session(s.session_id) if self.token_aggregator else None
+            real_total = real_sess.get("total", 0) if real_sess else 0
+            display_tokens = real_total if real_total > 0 else s.session_tokens
+            ctx_pct = min(1.0, display_tokens / max(1, s.context_limit))
             bar_h = 4
             pr.setBrush(QBrush(C["card_bg"]))
             pr.setPen(Qt.PenStyle.NoPen)
             pr.drawRoundedRect(QRectF(L + 16, top, cw - 16, bar_h), 2, 2)
             if ctx_pct > 0:
-                bc = (
-                    C["red"] if ctx_pct > 0.95
-                    else C["coral"] if ctx_pct > 0.80
-                    else C["amber"] if ctx_pct > 0.50
-                    else C["green"]
-                )
+                # Smooth color interpolation: green → amber → coral → red
+                def _lerp_color(c1, c2, f):
+                    f = max(0, min(1, f))
+                    return QColor(
+                        int(c1.red() + (c2.red() - c1.red()) * f),
+                        int(c1.green() + (c2.green() - c1.green()) * f),
+                        int(c1.blue() + (c2.blue() - c1.blue()) * f),
+                    )
+                if ctx_pct <= 0.50:
+                    bc = _lerp_color(C["green"], C["amber"], ctx_pct / 0.50)
+                elif ctx_pct <= 0.80:
+                    bc = _lerp_color(C["amber"], C["coral"], (ctx_pct - 0.50) / 0.30)
+                else:
+                    bc = _lerp_color(C["coral"], C["red"], (ctx_pct - 0.80) / 0.20)
                 pr.setBrush(QBrush(bc))
                 pr.drawRoundedRect(
                     QRectF(L + 16, top, max(bar_h, (cw - 16) * ctx_pct), bar_h), 2, 2,
                 )
             pr.setPen(QPen(C["text_lo"]))
-            pr.setFont(QFont("Segoe UI", 7))
-            ctx_text = f"~{s.session_tokens // 1000}k / {s.context_limit // 1000}k"
+            pr.setFont(self._F7)
+            prefix = "" if real_total > 0 else "~"
+            ctx_text = f"{prefix}{display_tokens // 1000}k / {s.context_limit // 1000}k"
             txt_h = 12
             pr.drawText(int(L + 16), int(top + bar_h + 1), int(cw - 16), txt_h,
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, ctx_text)
             top += bar_h + txt_h + 2
         if not ac:
-            pr.setPen(QPen(C["text_lo"]))
-            pr.setFont(QFont("Segoe UI", 9))
-            pr.drawText(L, top, cw, 20, Qt.AlignmentFlag.AlignLeft, "No active sessions")
-            top += 24
+            # Charming empty state — dimmed Clawd with thought bubble
+            empty_cx = L + cw // 2 - 22
+            empty_cy = top + 4
+            pr.setOpacity(0.4)
+            draw_clawd(pr, empty_cx, empty_cy, 2.2, self._bounce, None, 0, 0, "neutral")
+            pr.setOpacity(min(1, (t - 0.15) / 0.4))
+            # Thought bubble dots
+            bx = empty_cx + 28
+            by = empty_cy + 2
+            pr.setBrush(QBrush(C["text_lo"]))
+            pr.setPen(Qt.PenStyle.NoPen)
+            pr.drawEllipse(QRectF(bx, by + 12, 3, 3))
+            pr.drawEllipse(QRectF(bx + 5, by + 7, 4, 4))
+            # Thought bubble
+            bubble = QPainterPath()
+            bubble.addRoundedRect(QRectF(bx + 8, by - 4, 120, 24), 10, 10)
+            pr.setBrush(QBrush(QColor(40, 40, 48)))
+            pr.drawPath(bubble)
+            pr.setPen(QPen(C["text_md"]))
+            pr.setFont(self._F9)
+            pr.drawText(int(bx + 14), int(by - 2), 112, 20,
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                        "Waiting for Claude...")
+            top += 36
         top += 4
         pr.setPen(QPen(C["divider"]))
         pr.drawLine(L, top, R, top)
@@ -1944,12 +2125,12 @@ class ClaudeNotch(QWidget):
             if all_todos:
                 done = sum(1 for td_item in all_todos if td_item["status"] == "completed")
                 pr.setPen(QPen(C["coral"]))
-                pr.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
-                pr.drawText(L, top, cw // 2, 18, Qt.AlignmentFlag.AlignLeft, "Tasks")
+                pr.setFont(self._F10B)
+                pr.drawText(L, top, cw // 2, 18, Qt.AlignmentFlag.AlignLeft, "\u2610 Tasks")
                 pr.setPen(QPen(C["coral"], 2.0))
-                pr.drawLine(L, top + 18, L + 40, top + 18)
+                pr.drawLine(L, top + 18, L + 52, top + 18)
                 pr.setPen(QPen(C["coral_light"]))
-                pr.setFont(QFont("Segoe UI", 9))
+                pr.setFont(self._F9)
                 pr.drawText(L + cw // 2, top, cw // 2, 18,
                             Qt.AlignmentFlag.AlignRight, f"{done}/{len(all_todos)} done")
                 top += 24
@@ -1963,7 +2144,7 @@ class ClaudeNotch(QWidget):
                     pr.setPen(Qt.PenStyle.NoPen)
                     pr.drawEllipse(QRectF(L + 1, top + rh / 2 - 3, 6, 6))
                     pr.setPen(QPen(C["text_hi"]))
-                    pr.setFont(QFont("Segoe UI", 9))
+                    pr.setFont(self._F9)
                     txt = item["text"]
                     txt = txt[:55] + "..." if len(txt) > 57 else txt
                     pr.drawText(L + 14, top, cw - 14, rh,
@@ -1977,17 +2158,17 @@ class ClaudeNotch(QWidget):
         # -- USAGE with coral stat cards --
         sub_mode = self.config.get("subscription_mode", "max")
         pr.setPen(QPen(C["coral"]))
-        pr.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
-        pr.drawText(L, top, cw, 18, Qt.AlignmentFlag.AlignLeft, "Usage")
+        pr.setFont(self._F10B)
+        pr.drawText(L, top, cw, 18, Qt.AlignmentFlag.AlignLeft, "\u25AE Usage")
         pr.setPen(QPen(C["coral"], 2.0))
-        pr.drawLine(L, top + 18, L + 44, top + 18)
+        pr.drawLine(L, top + 18, L + 56, top + 18)
         # Subscription mode pill
         mode_text = "Subscription" if sub_mode == "max" else "API Tokens"
-        pr.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+        pr.setFont(self._F7B)
         fm = pr.fontMetrics()
         mp_w = fm.horizontalAdvance(mode_text) + 12
         mp_c = C["green"] if sub_mode == "max" else C["amber"]
-        pr.setBrush(QBrush(QColor(mp_c.red(), mp_c.green(), mp_c.blue(), 30)))
+        pr.setBrush(QBrush(_with_alpha(mp_c, 30)))
         pr.setPen(QPen(mp_c, 0.8))
         pr.drawRoundedRect(QRectF(L + 50, top + 2, mp_w, 16), 8, 8)
         pr.setPen(QPen(mp_c))
@@ -2025,15 +2206,15 @@ class ClaudeNotch(QWidget):
             ]
         for i, (val, label, color) in enumerate(stats):
             cx = L + i * (card_w + card_gap)
-            pr.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 12)))
-            pr.setPen(QPen(QColor(color.red(), color.green(), color.blue(), 70), 1.0))
+            pr.setBrush(QBrush(_with_alpha(color, 12)))
+            pr.setPen(QPen(_with_alpha(color, 70), 1.0))
             pr.drawRoundedRect(QRectF(cx, top, card_w, card_h), card_r, card_r)
             pr.setPen(QPen(color))
-            pr.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+            pr.setFont(self._F18B)
             pr.drawText(int(cx + 8), int(top + 2), int(card_w - 16), 28,
                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, val)
             pr.setPen(QPen(C["text_md"]))
-            pr.setFont(QFont("Segoe UI", 8))
+            pr.setFont(self._F8)
             pr.drawText(int(cx + 8), int(top + 32), int(card_w - 16), 14,
                         Qt.AlignmentFlag.AlignLeft, label)
         top += card_h + 8
@@ -2049,18 +2230,18 @@ class ClaudeNotch(QWidget):
             # Show breakdown: input/output/cache
             inp = real_tokens.get("input", 0); out = real_tokens.get("output", 0)
             cr = real_tokens.get("cache_read", 0)
-            cw = real_tokens.get("cache_write", 0)
+            cwr = real_tokens.get("cache_write", 0)
             parts = []
             if inp: parts.append(f"in:{inp//1000}k")
             if out: parts.append(f"out:{out//1000}k")
             if cr: parts.append(f"cache_r:{cr//1000}k")
-            if cw: parts.append(f"cache_w:{cw//1000}k")
+            if cwr: parts.append(f"cache_w:{cwr//1000}k")
             detail_str = "  ·  ".join(parts) if parts else ""
-            pr.setPen(QPen(C["coral"])); pr.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
+            pr.setPen(QPen(C["coral"])); pr.setFont(self._F9B)
             pr.drawText(L, top, cw, 14, Qt.AlignmentFlag.AlignLeft, tok_detail)
             if detail_str:
                 top += 15
-                pr.setPen(QPen(C["text_lo"])); pr.setFont(QFont("Segoe UI", 8))
+                pr.setPen(QPen(C["text_lo"])); pr.setFont(self._F8)
                 pr.drawText(L, top, cw, 14, Qt.AlignmentFlag.AlignLeft, detail_str)
         else:
             est_tok = td.get("est_tokens", 0)
@@ -2069,7 +2250,7 @@ class ClaudeNotch(QWidget):
                 else f"~{est_tok / 1000:.0f}k" if est_tok > 1000
                 else f"~{est_tok}"
             )
-            pr.setPen(QPen(C["text_md"])); pr.setFont(QFont("Segoe UI", 9))
+            pr.setPen(QPen(C["text_md"])); pr.setFont(self._F9)
             pr.drawText(L, top, cw, 14, Qt.AlignmentFlag.AlignLeft,
                         f"{tok_str} est. tokens {period_label}  \u00b7  {td.get('sessions', 0)} sessions")
         top += 18
@@ -2092,7 +2273,7 @@ class ClaudeNotch(QWidget):
             else f"~{mo_tok}"
         )
         pr.setPen(QPen(C["text_lo"]))
-        pr.setFont(QFont("Segoe UI", 8))
+        pr.setFont(self._F8)
         if sub_mode == "api":
             mo_cost = mo.get("est_cost", 0.0)
             mo_cost_str = f"${mo_cost:.2f}" if mo_cost < 100 else f"${mo_cost:.0f}"
@@ -2124,7 +2305,7 @@ class ClaudeNotch(QWidget):
                             QRectF(L + i * bw, top + sl_h - bh, bw - 0.8, bh), 1, 1,
                         )
                 pr.setPen(QPen(C["text_lo"]))
-                pr.setFont(QFont("Segoe UI", 7))
+                pr.setFont(self._F7)
                 pr.drawText(L, int(top + sl_h + 1), cw, 10,
                             Qt.AlignmentFlag.AlignRight, "activity (30 min)")
                 top += sl_h + 12
@@ -2134,7 +2315,7 @@ class ClaudeNotch(QWidget):
             streak = self.streaks.current_streak
             top_day, top_count = self.streaks.top_day_this_week
             pr.setPen(QPen(C["coral"]))
-            pr.setFont(QFont("Segoe UI", 9))
+            pr.setFont(self._F9)
             streak_text = (
                 f"  {streak}-day streak" if streak > 1 else "Start your streak today!"
             )
@@ -2147,7 +2328,7 @@ class ClaudeNotch(QWidget):
             ram = SystemMonitor.get_ram()
             cpu = SystemMonitor.get_cpu()
             pr.setPen(QPen(C["text_md"]))
-            pr.setFont(QFont("Segoe UI", 8))
+            pr.setFont(self._F8)
             pr.drawText(
                 L, top, cw, 12, Qt.AlignmentFlag.AlignLeft,
                 f"CPU {cpu:.0f}%  \u00b7  RAM {ram['used_gb']}GB/{ram['total_gb']}GB ({ram['pct']}%)",
@@ -2179,10 +2360,10 @@ class ClaudeNotch(QWidget):
         MAX_KEYS_SHOWN = 5
         if self._usage_keys:
             pr.setPen(QPen(C["coral"]))
-            pr.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
-            pr.drawText(L, top, cw, 16, Qt.AlignmentFlag.AlignLeft, "API Keys")
+            pr.setFont(self._F9B)
+            pr.drawText(L, top, cw, 16, Qt.AlignmentFlag.AlignLeft, "\u26BF API Keys")
             pr.setPen(QPen(C["coral"], 1.5))
-            pr.drawLine(L, top + 15, L + 58, top + 15)
+            pr.drawLine(L, top + 15, L + 68, top + 15)
             top += 20
             for kd in self._usage_keys[:MAX_KEYS_SHOWN]:
                 row_h = 22
@@ -2193,14 +2374,14 @@ class ClaudeNotch(QWidget):
                 pr.drawEllipse(QRectF(L + 1, top + row_h / 2 - 3.5, 7, 7))
                 # Label
                 pr.setPen(QPen(C["text_hi"]))
-                pr.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
+                pr.setFont(self._F9B)
                 lbl = kd.get("label", "Key")
                 lbl = lbl[:14] + ".." if len(lbl) > 15 else lbl
                 pr.drawText(int(L + 14), int(top), int(cw * 0.28), row_h,
                             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, lbl)
                 # Redacted key
                 pr.setPen(QPen(C["text_lo"]))
-                pr.setFont(QFont("Consolas", 8))
+                pr.setFont(self._FC8)
                 pr.drawText(int(L + cw * 0.28 + 4), int(top), int(cw * 0.32), row_h,
                             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                             kd.get("key_redacted", ""))
@@ -2210,7 +2391,7 @@ class ClaudeNotch(QWidget):
                 err = kd.get("error")
                 if err:
                     pr.setPen(QPen(hc))
-                    pr.setFont(QFont("Segoe UI", 7))
+                    pr.setFont(self._F7)
                     err_short = err[:22] + ".." if len(err) > 24 else err
                     pr.drawText(bar_x, int(top), bar_w, row_h,
                                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
@@ -2232,7 +2413,7 @@ class ClaudeNotch(QWidget):
                             QRectF(bar_x, bar_y, max(bh, bw_bar * min(1, pct)), bh), 3, 3,
                         )
                     pr.setPen(QPen(C["text_md"]))
-                    pr.setFont(QFont("Segoe UI", 7))
+                    pr.setFont(self._F7)
                     pr.drawText(bar_x + bw_bar + 4, int(top), 32, row_h,
                                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                                 f"{int(pct * 100)}%")
@@ -2240,14 +2421,14 @@ class ClaudeNotch(QWidget):
             if len(self._usage_keys) > MAX_KEYS_SHOWN:
                 extra = len(self._usage_keys) - MAX_KEYS_SHOWN
                 pr.setPen(QPen(C["text_lo"]))
-                pr.setFont(QFont("Segoe UI", 8))
+                pr.setFont(self._F8)
                 pr.drawText(L + 14, int(top), int(cw - 14), 16,
                             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                             f"+ {extra} more key{'s' if extra > 1 else ''}")
                 top += 18
         elif sub_mode == "api":
             pr.setPen(QPen(C["text_lo"]))
-            pr.setFont(QFont("Segoe UI", 8))
+            pr.setFont(self._F8)
             pr.drawText(L, top, cw, 14, Qt.AlignmentFlag.AlignLeft,
                         "Add API keys in Settings to monitor usage")
             top += 14
@@ -2262,10 +2443,10 @@ class ClaudeNotch(QWidget):
             recent = self.notif_history.get_recent(4)
             if recent:
                 pr.setPen(QPen(C["coral"]))
-                pr.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
-                pr.drawText(L, top, cw, 16, Qt.AlignmentFlag.AlignLeft, "Notifications")
+                pr.setFont(self._F9B)
+                pr.drawText(L, top, cw, 16, Qt.AlignmentFlag.AlignLeft, "\u25C8 Notifications")
                 pr.setPen(QPen(C["coral"], 1.5))
-                pr.drawLine(L, top + 15, L + 90, top + 15)
+                pr.drawLine(L, top + 15, L + 100, top + 15)
                 top += 20
                 ntype_colors = {
                     "completion": C["green"], "attention": C["coral"], "budget": C["amber"],
@@ -2277,12 +2458,12 @@ class ClaudeNotch(QWidget):
                     pr.setPen(Qt.PenStyle.NoPen)
                     pr.drawEllipse(QRectF(L + 1, top + rh_n / 2 - 2.5, 5, 5))
                     pr.setPen(QPen(C["text_hi"]))
-                    pr.setFont(QFont("Segoe UI", 8))
+                    pr.setFont(self._F8)
                     pr.drawText(int(L + 12), int(top), int(cw - 50), rh_n,
                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                                 n["message"][:50])
                     pr.setPen(QPen(C["text_lo"]))
-                    pr.setFont(QFont("Segoe UI", 7))
+                    pr.setFont(self._F7)
                     pr.drawText(int(L + cw - 36), int(top), 36, rh_n,
                                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                                 n["time"])
@@ -2294,10 +2475,10 @@ class ClaudeNotch(QWidget):
 
         # -- RECENT ACTIVITY (scrollable) --
         pr.setPen(QPen(C["coral"]))
-        pr.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
-        pr.drawText(L, top, cw, 18, Qt.AlignmentFlag.AlignLeft, "Recent Activity")
+        pr.setFont(self._F10B)
+        pr.drawText(L, top, cw, 18, Qt.AlignmentFlag.AlignLeft, "\u25F7 Recent Activity")
         pr.setPen(QPen(C["coral"], 2.0))
-        pr.drawLine(L, top + 18, L + 112, top + 18)
+        pr.drawLine(L, top + 18, L + 124, top + 18)
         top += 24
 
         footer_h = 36
@@ -2325,20 +2506,39 @@ class ClaudeNotch(QWidget):
                 pr.setPen(Qt.PenStyle.NoPen)
                 pr.drawEllipse(QRectF(L + 1, item_y + rh / 2 - 3, 6, 6))
                 pr.setPen(QPen(C["text_hi"]))
-                pr.setFont(QFont("Segoe UI", 9))
+                pr.setFont(self._F9)
                 max_chars = max(30, int((cw - 70) / 6.5))
                 d = f"{tk.get('project', '')}: {tk.get('summary', '')}"
                 d = d[:max_chars] + "..." if len(d) > max_chars + 2 else d
                 pr.drawText(int(L + 14), int(item_y), int(cw - 64), rh,
                             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, d)
                 pr.setPen(QPen(C["text_lo"]))
-                pr.setFont(QFont("Segoe UI", 8))
+                pr.setFont(self._F8)
                 pr.drawText(int(L + cw - 44), int(item_y), 44, rh,
                             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                             tk.get("time", ""))
                 item_y += rh + 1
 
             pr.restore()
+
+            # Gradient fade at scroll edges — content fades into view
+            if self._max_scroll > 0:
+                fade_h = 16
+                if self._scroll_offset > 0:
+                    fade_top = QLinearGradient(0, top, 0, top + fade_h)
+                    fade_top.setColorAt(0, C["notch_bg"])
+                    fade_top.setColorAt(1, _with_alpha(C["notch_bg"], 0))
+                    pr.setBrush(QBrush(fade_top))
+                    pr.setPen(Qt.PenStyle.NoPen)
+                    pr.drawRect(QRectF(L - 2, top, cw + 4, fade_h))
+                if self._scroll_offset < self._max_scroll:
+                    bot = top + avail
+                    fade_bot = QLinearGradient(0, bot - fade_h, 0, bot)
+                    fade_bot.setColorAt(0, _with_alpha(C["notch_bg"], 0))
+                    fade_bot.setColorAt(1, C["notch_bg"])
+                    pr.setBrush(QBrush(fade_bot))
+                    pr.setPen(Qt.PenStyle.NoPen)
+                    pr.drawRect(QRectF(L - 2, bot - fade_h, cw + 4, fade_h))
 
             # Scroll indicator
             if self._max_scroll > 0:
@@ -2353,29 +2553,42 @@ class ClaudeNotch(QWidget):
         else:
             self._max_scroll = 0
             pr.setPen(QPen(C["text_lo"]))
-            pr.setFont(QFont("Segoe UI", 9))
+            pr.setFont(self._F9)
             pr.drawText(L, top, cw, 18, Qt.AlignmentFlag.AlignLeft, "No recent activity")
 
         # -- FOOTER --
+        btn_h = 16
+        # Settings gear button
+        gear_w = 22
+        gear_x = R - gear_w
+        gear_y = h - 32
+        self._settings_btn_rect = QRectF(gear_x, gear_y, gear_w, btn_h)
+        pr.setBrush(QBrush(_with_alpha(C["coral"], 20)))
+        pr.setPen(QPen(C["coral"], 0.8))
+        pr.drawRoundedRect(self._settings_btn_rect, 4, 4)
+        pr.setPen(QPen(C["coral"]))
+        pr.setFont(self._F9)
+        pr.drawText(int(gear_x), int(gear_y), int(gear_w), int(btn_h),
+                    Qt.AlignmentFlag.AlignCenter, "\u2699")
+        # Export button
         exp_w = 50
-        exp_h = 16
-        exp_x = R - exp_w
+        exp_x = gear_x - exp_w - 4
         exp_y = h - 32
-        self._export_btn_rect = QRectF(exp_x, exp_y, exp_w, exp_h)
-        pr.setBrush(QBrush(QColor(C["coral"].red(), C["coral"].green(), C["coral"].blue(), 20)))
+        self._export_btn_rect = QRectF(exp_x, exp_y, exp_w, btn_h)
+        pr.setBrush(QBrush(_with_alpha(C["coral"], 20)))
         pr.setPen(QPen(C["coral"], 0.8))
         pr.drawRoundedRect(self._export_btn_rect, 4, 4)
         pr.setPen(QPen(C["coral"]))
-        pr.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
-        pr.drawText(int(exp_x), int(exp_y), int(exp_w), int(exp_h),
+        pr.setFont(self._F7B)
+        pr.drawText(int(exp_x), int(exp_y), int(exp_w), int(btn_h),
                     Qt.AlignmentFlag.AlignCenter, "Export")
         pr.setPen(QPen(C["coral"]))
-        pr.setFont(QFont("Segoe UI", 8))
+        pr.setFont(self._F8)
         pin = ("Pinned" if self._pinned
                else "Click = expand  \u00b7  Hover = peek  \u00b7  DblClick = new session")
-        pr.drawText(L, h - 32, cw - exp_w - 8, 14, Qt.AlignmentFlag.AlignLeft, pin)
+        pr.drawText(L, h - 32, cw - exp_w - gear_w - 16, 14, Qt.AlignmentFlag.AlignLeft, pin)
         pr.setPen(QPen(C["text_lo"]))
-        pr.setFont(QFont("Segoe UI", 8))
+        pr.setFont(self._F8)
         pr.drawText(L, h - 18, cw, 14, Qt.AlignmentFlag.AlignCenter,
                     f"v{__version__}  \u00b7  Running {self.uptime}")
         pr.restore()
@@ -2386,7 +2599,7 @@ class ClaudeNotch(QWidget):
         """BUG FIX #7: 1 px dark text shadow behind bar text."""
         bh, br = 14, 7
         p.setPen(QPen(C["text_md"]))
-        p.setFont(QFont("Segoe UI", 9))
+        p.setFont(self._F9)
         p.drawText(x, y, w, 16, Qt.AlignmentFlag.AlignLeft, label)
         y += 17
         p.setBrush(QBrush(C["card_bg"]))
@@ -2402,7 +2615,7 @@ class ClaudeNotch(QWidget):
             p.setPen(Qt.PenStyle.NoPen)
             p.drawRoundedRect(QRectF(x + 1, y + 1, fw - 2, bh - 2), br - 1, br - 1)
         # BUG #7 FIX: draw dark shadow first, then bright text on top
-        p.setFont(QFont("Segoe UI", 8))
+        p.setFont(self._F8)
         p.setPen(QPen(QColor(0, 0, 0, 120)))
         p.drawText(int(x + 1), int(y + 1), int(w - 4), int(bh),
                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, txt)
