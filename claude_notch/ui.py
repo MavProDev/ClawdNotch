@@ -1111,8 +1111,10 @@ class ClaudeNotch(QWidget):
                     period_label = "this week"
         self._cached_period_label = period_label
         self._cached_period_data = td
-        # Update dim target
-        if self.config.get("dim_when_inactive", True) and self.sessions.total_active == 0:
+        # Update dim target — only dim when collapsed, never when expanded
+        if (self.config.get("dim_when_inactive", True)
+                and self.sessions.total_active == 0
+                and not self._expanded):
             self._target_opacity = max(0.45, self.config.get("dim_opacity", 0.55))
         else:
             self._target_opacity = 1.0
@@ -1166,6 +1168,10 @@ class ClaudeNotch(QWidget):
             self._expanded = True
             self._anim_dir = 1
             self._at.start()
+            # Snap to full opacity immediately when expanding — no slow fade
+            self._target_opacity = 1.0
+            self._current_opacity = 1.0
+            self.setWindowOpacity(1.0)
 
     def _collapse(self, force=False):
         """Collapse the expanded notch.
