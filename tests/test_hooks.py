@@ -13,8 +13,9 @@ def test_hook_server_accepts_tcp(qapp):
     """Send a JSON payload to HookServer over TCP; the signal should fire."""
     received = []
 
-    # Use a high ephemeral port to avoid conflicts
-    port = 19799
+    # Use a random high port to avoid conflicts in parallel CI runs
+    import random
+    port = random.randint(49152, 65535)
     server = HookServer(port=port)
     server.event_received.connect(lambda evt: received.append(evt))
     server.start()
@@ -32,12 +33,13 @@ def test_hook_server_accepts_tcp(qapp):
         except socket.timeout:
             pass
         sock.close()
-        time.sleep(0.5)  # give the signal time to propagate
-        # Process Qt events so the signal can be delivered
+        # Poll for signal delivery with timeout instead of fixed sleeps
         from PyQt6.QtWidgets import QApplication
-        QApplication.processEvents()
-        time.sleep(0.3)
-        QApplication.processEvents()
+        for _ in range(20):
+            QApplication.processEvents()
+            time.sleep(0.1)
+            if received:
+                break
     finally:
         server.stop()
         server.wait(3000)

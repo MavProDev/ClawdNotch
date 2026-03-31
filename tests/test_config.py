@@ -18,10 +18,20 @@ from claude_notch.config import (
 # ── DEFAULT_CONFIG ──────────────────────────────────────────────────────────
 
 def test_default_config_has_all_keys():
-    """DEFAULT_CONFIG must have at least 35 keys (documented contract)."""
-    assert len(DEFAULT_CONFIG) >= 35, (
-        f"Expected >=35 keys in DEFAULT_CONFIG, got {len(DEFAULT_CONFIG)}"
-    )
+    """DEFAULT_CONFIG must contain all required configuration keys."""
+    required_keys = {
+        "hook_server_port", "sound_enabled", "toast_enabled", "auto_start",
+        "poll_interval_seconds", "max_sessions_shown", "last_x", "last_y",
+        "last_edge", "auto_mute_when_focused", "default_model",
+        "expanded_w", "expanded_h", "was_expanded", "subscription_mode",
+        "api_keys", "color_theme", "mini_mode", "dnd_mode",
+        "dim_when_inactive", "dim_opacity", "budget_daily", "budget_monthly",
+        "sparkline_enabled", "system_resources_enabled", "streaks_enabled",
+        "notification_history_enabled", "click_to_focus", "clipboard_on_click",
+        "session_estimate_enabled", "export_format", "multi_monitor",
+    }
+    missing = required_keys - set(DEFAULT_CONFIG.keys())
+    assert not missing, f"Missing required keys in DEFAULT_CONFIG: {missing}"
 
 
 # ── THEMES ──────────────────────────────────────────────────────────────────

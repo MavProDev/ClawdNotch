@@ -22,12 +22,20 @@ except ImportError:
 class NotificationHistory:
     """Keeps a log of recent notifications."""
     def __init__(self, max_items=50):
-        self._items = []; self._max = max_items
+        self._items = []
+        self._max = max_items
+        self._lock = threading.Lock()
+
     def add(self, title, message, ntype="info"):
-        self._items.append({"title": title, "message": message, "type": ntype,
-                            "time": datetime.now().strftime("%H:%M")})
-        if len(self._items) > self._max: self._items = self._items[-self._max:]
-    def get_recent(self, n=8): return list(reversed(self._items[-n:]))
+        with self._lock:
+            self._items.append({"title": title, "message": message, "type": ntype,
+                                "time": datetime.now().strftime("%H:%M")})
+            if len(self._items) > self._max:
+                self._items = self._items[-self._max:]
+
+    def get_recent(self, n=8):
+        with self._lock:
+            return list(reversed(self._items[-n:]))
 
 
 class NotificationManager:
