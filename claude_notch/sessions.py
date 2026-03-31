@@ -179,7 +179,7 @@ class EmotionEngine:
 class SessionManager(QObject):
     session_updated = pyqtSignal()
     task_completed = pyqtSignal(str, str)
-    needs_attention = pyqtSignal(str)
+    needs_attention = pyqtSignal(str, int)  # project_name, pid
     budget_alert = pyqtSignal(str)
     def __init__(self, usage_tracker, emotion_engine=None, todo_manager=None, sparkline=None, config=None):
         super().__init__()
@@ -222,7 +222,7 @@ class SessionManager(QObject):
                 s.tasks_completed.append({"summary": f"Used {tool_name}", "time": datetime.now().strftime("%H:%M"), "status": "completed"})
                 s.tasks_completed = s.tasks_completed[-20:]
             elif et == "PostToolUseFailure": s.state = "error"; s.current_tool = ""
-            elif et == "Notification": s.state = "waiting"; self.needs_attention.emit(s.project_name)
+            elif et == "Notification": s.state = "waiting"; self.needs_attention.emit(s.project_name, s.pid)
             elif et == "Stop":
                 s.state = "idle"  # Task done but session still alive -- waiting for next prompt
                 sm = event.get("summary", "Task completed")
