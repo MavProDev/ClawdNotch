@@ -24,6 +24,7 @@ from claude_notch.config import (
     TOKEN_ESTIMATES,
     MODEL_CONTEXT_LIMITS,
     SESSION_TINTS,
+    THINKING_WORDS,
     _atomic_write,
     C,
 )
@@ -55,6 +56,7 @@ class Session:
     model: str = "sonnet"
     pid: int = 0
     detected_via: str = "hook"
+    thinking_word: str = ""
     @property
     def project_name(self): return Path(self.project_dir).name if self.project_dir else "unknown"
     @property
@@ -211,7 +213,10 @@ class SessionManager(QObject):
             est = TOKEN_ESTIMATES.get(et, 100)
             s.session_tokens += est
             if et == "SessionStart": s.state = "idle"
-            elif et == "PreToolUse": s.state = "working"; s.current_tool = event.get("tool_name", "")
+            elif et == "PreToolUse":
+                if s.state != "working":
+                    s.thinking_word = random.choice(THINKING_WORDS)
+                s.state = "working"; s.current_tool = event.get("tool_name", "")
             elif et == "PostToolUse":
                 s.state = "working"; s.tool_count += 1; s.current_tool = ""
                 tool_name = event.get("tool_name", "tool")
@@ -233,6 +238,8 @@ class SessionManager(QObject):
                 self._completed_durations = self._completed_durations[-50:]
                 s.last_activity = datetime.now() - timedelta(minutes=3)
             elif et == "UserPromptSubmit":
+                if s.state != "working":
+                    s.thinking_word = random.choice(THINKING_WORDS)
                 s.state = "working"
                 if self._emotion:
                     prompt_text = event.get("user_prompt", "")

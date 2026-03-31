@@ -6,7 +6,7 @@ The shortcut points to a stable launcher at ~/.claude-notch/launcher.pyw
 so moving the project folder only requires re-running this script — the
 shortcut itself never needs to change.
 """
-import struct, os, sys, zlib, json
+import struct, os, sys, zlib, json, tempfile
 from pathlib import Path
 
 # ── Clawd pixel grid (11x10) — body=1, eyes=2, empty=0 ──
@@ -105,9 +105,10 @@ CONFIG_DIR = Path.home() / ".claude-notch"
 def create_launcher(project_dir: Path, pythonw: str):
     """Create a stable launcher at ~/.claude-notch/launcher.pyw.
 
-    The launcher reads install_path from config.json to find claude_notch.py.
-    This means the shortcut always points to a fixed location and survives
-    the project folder being moved — just re-run create_shortcut.py.
+    The launcher reads install_path from config.json and runs
+    ``python -m claude_notch`` from that directory.  The shortcut always
+    points to a fixed location and survives the project folder being
+    moved — just re-run create_shortcut.py.
     """
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -121,8 +122,18 @@ def create_launcher(project_dir: Path, pythonw: str):
         except Exception:
             pass
     config["install_path"] = str(project_dir)
-    with open(config_file, "w") as f:
-        json.dump(config, f, indent=2)
+    # Atomic write: write to temp file then rename (Bug #15 fix)
+    fd, tmp_path = tempfile.mkstemp(dir=str(CONFIG_DIR), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(config, f, indent=2)
+        os.replace(tmp_path, str(config_file))
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
     # Write the launcher script
     launcher = CONFIG_DIR / "launcher.pyw"
@@ -138,17 +149,17 @@ def main():
     with open(CONFIG) as f:
         config = json.load(f)
     install_path = config.get("install_path", "")
-    script = Path(install_path) / "claude_notch.py"
-    if not script.exists():
+    pkg_dir = Path(install_path) / "claude_notch"
+    if not pkg_dir.is_dir():
         raise SystemExit(
-            f"claude_notch.py not found at {{script}}.\\n"
+            f"claude_notch/ package not found at {{pkg_dir}}.\\n"
             f"If you moved the folder, re-run create_shortcut.py from the new location."
         )
     # Launch with pythonw to avoid console window
     pythonw = Path(sys.executable).parent / "pythonw.exe"
     if not pythonw.exists():
         pythonw = sys.executable
-    subprocess.Popen([str(pythonw), str(script)], cwd=install_path)
+    subprocess.Popen([str(pythonw), "-m", "claude_notch"], cwd=install_path)
 
 if __name__ == "__main__":
     main()
