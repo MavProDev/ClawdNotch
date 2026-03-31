@@ -639,3 +639,59 @@ class TokenAggregator:
                     day["total"] += inp + out + cache_read + cache_write
         except (OSError, PermissionError):
             pass  # file locked by Claude Code, skip
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# UPDATE CHECKER — checks GitHub Releases for new versions
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _parse_version(tag: str) -> tuple:
+    """Parse 'v3.1.0' or '3.1.0' into (3, 1, 0) for comparison."""
+    try:
+        return tuple(int(x) for x in tag.lstrip("v").split("."))
+    except (ValueError, AttributeError):
+        return (0, 0, 0)
+
+
+def check_for_updates(config, on_update_available=None):
+    """Check GitHub Releases for a newer version. Call from a background thread.
+
+    Args:
+        config: ConfigManager instance
+        on_update_available: callback(version_str, download_url) called if update found
+    """
+    import webbrowser
+    from claude_notch import __version__
+
+    # Only check once per day
+    today = datetime.now().strftime("%Y-%m-%d")
+    if config.get("last_update_check") == today:
+        return
+    config.set("last_update_check", today)
+
+    try:
+        resp = requests.get(
+            "https://api.github.com/repos/MavProDev/ClawdNotch/releases/latest",
+            timeout=10,
+            headers={"Accept": "application/vnd.github.v3+json"},
+        )
+        if resp.status_code != 200:
+            return
+        data = resp.json()
+        latest_tag = data.get("tag_name", "")
+        latest_url = data.get("html_url", "")
+
+        if _parse_version(latest_tag) > _parse_version(__version__):
+            if on_update_available:
+                on_update_available(latest_tag, latest_url)
+    except Exception:
+        pass  # network error, no big deal
+
+
+def open_release_page(url: str):
+    """Open a GitHub release page in the default browser."""
+    import webbrowser
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
