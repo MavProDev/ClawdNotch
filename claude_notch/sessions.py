@@ -182,6 +182,7 @@ class SessionManager(QObject):
     task_completed = pyqtSignal(str, str)
     needs_attention = pyqtSignal(str, int)  # project_name, pid
     budget_alert = pyqtSignal(str)
+    achievement = pyqtSignal(str)  # achievement message
     def __init__(self, usage_tracker, emotion_engine=None, todo_manager=None, sparkline=None, config=None):
         super().__init__()
         self.sessions = {}
@@ -195,6 +196,65 @@ class SessionManager(QObject):
         self._completed_durations = []
         self._active_cache = []
         self._active_cache_ts = 0.0
+        self._achievements_fired = set()  # track which milestones have been shown
+    def _on_session_start(self, s, event):
+        s.state = "idle"
+
+    def _on_pre_tool_use(self, s, event):
+        if s.state != "working":
+            s.thinking_word = random.choice(THINKING_WORDS)
+        s.state = "working"
+        s.current_tool = event.get("tool_name", "")
+
+    def _on_post_tool_use(self, s, event):
+        sid = s.session_id
+        s.state = "working"; s.tool_count += 1; s.current_tool = ""
+        tool_name = event.get("tool_name", "tool")
+        if self._todos:
+            self._todos.process_tool_event(sid, tool_name, event.get("tool_input", ""))
+        s.tasks_completed.append({"summary": f"Used {tool_name}", "time": datetime.now().strftime("%Y-%m-%d %H:%M"), "status": "completed"})
+        s.tasks_completed = s.tasks_completed[-20:]
+
+    def _on_post_tool_use_failure(self, s, event):
+        s.state = "error"; s.current_tool = ""
+
+    def _on_notification(self, s, event):
+        s.state = "waiting"
+        self.needs_attention.emit(s.project_name, s.pid)
+
+    def _on_stop(self, s, event):
+        s.state = "idle"
+        sm = event.get("summary", "Task completed")
+        s.tasks_completed.append({"summary": sm, "time": datetime.now().strftime("%Y-%m-%d %H:%M"), "status": "completed"})
+        self.task_completed.emit(s.project_name, sm)
+
+    def _on_session_end(self, s, event):
+        s.state = "completed"
+        dur = (datetime.now() - s.started_at).total_seconds() / 60
+        self._completed_durations.append(dur)
+        self._completed_durations = self._completed_durations[-50:]
+        s.last_activity = datetime.now() - timedelta(minutes=3)
+
+    def _on_user_prompt(self, s, event):
+        if s.state != "working":
+            s.thinking_word = random.choice(THINKING_WORDS)
+        s.state = "working"
+        if self._emotion:
+            prompt_text = event.get("user_prompt", "")
+            s.emotion = self._emotion.process(s.session_id, prompt_text)
+
+    # Event type -> handler method
+    _EVENT_HANDLERS = {
+        "SessionStart": _on_session_start,
+        "PreToolUse": _on_pre_tool_use,
+        "PostToolUse": _on_post_tool_use,
+        "PostToolUseFailure": _on_post_tool_use_failure,
+        "Notification": _on_notification,
+        "Stop": _on_stop,
+        "SessionEnd": _on_session_end,
+        "UserPromptSubmit": _on_user_prompt,
+    }
+
     def handle_event(self, event):
         et = event.get("event", "")
         sid = event.get("session_id", "unknown")
@@ -212,38 +272,9 @@ class SessionManager(QObject):
             if pd: s.project_dir = pd
             est = TOKEN_ESTIMATES.get(et, 100)
             s.session_tokens += est
-            if et == "SessionStart": s.state = "idle"
-            elif et == "PreToolUse":
-                if s.state != "working":
-                    s.thinking_word = random.choice(THINKING_WORDS)
-                s.state = "working"; s.current_tool = event.get("tool_name", "")
-            elif et == "PostToolUse":
-                s.state = "working"; s.tool_count += 1; s.current_tool = ""
-                tool_name = event.get("tool_name", "tool")
-                if self._todos:
-                    self._todos.process_tool_event(sid, tool_name, event.get("tool_input", ""))
-                s.tasks_completed.append({"summary": f"Used {tool_name}", "time": datetime.now().strftime("%Y-%m-%d %H:%M"), "status": "completed"})
-                s.tasks_completed = s.tasks_completed[-20:]
-            elif et == "PostToolUseFailure": s.state = "error"; s.current_tool = ""
-            elif et == "Notification": s.state = "waiting"; self.needs_attention.emit(s.project_name, s.pid)
-            elif et == "Stop":
-                s.state = "idle"  # Task done but session still alive -- waiting for next prompt
-                sm = event.get("summary", "Task completed")
-                s.tasks_completed.append({"summary": sm, "time": datetime.now().strftime("%Y-%m-%d %H:%M"), "status": "completed"})
-                self.task_completed.emit(s.project_name, sm)
-            elif et == "SessionEnd":
-                s.state = "completed"
-                dur = (datetime.now() - s.started_at).total_seconds() / 60
-                self._completed_durations.append(dur)
-                self._completed_durations = self._completed_durations[-50:]
-                s.last_activity = datetime.now() - timedelta(minutes=3)
-            elif et == "UserPromptSubmit":
-                if s.state != "working":
-                    s.thinking_word = random.choice(THINKING_WORDS)
-                s.state = "working"
-                if self._emotion:
-                    prompt_text = event.get("user_prompt", "")
-                    s.emotion = self._emotion.process(sid, prompt_text)
+            handler = self._EVENT_HANDLERS.get(et)
+            if handler:
+                handler(self, s, event)
         # Budget alert check (once per threshold crossing, not every event)
         if self._config and self._config.get("subscription_mode") == "api":
             # --- Daily budget alert ---
@@ -264,6 +295,23 @@ class SessionManager(QObject):
                 if month_cost >= budget_monthly * 0.8 and not getattr(self, '_budget_monthly_alerted', None) == monthly_alert_key:
                     self._budget_monthly_alerted = monthly_alert_key
                     self.budget_alert.emit(f"Monthly budget: ${month_cost:.2f} / ${budget_monthly:.2f}")
+        # Achievement milestones
+        if self._tracker:
+            today = self._tracker.today
+            tc = today.get("tool_calls", 0)
+            milestones = [
+                (50,   "50 tool calls today!"),
+                (100,  "100 tool calls today — keep going!"),
+                (250,  "250 tool calls — you're on fire!"),
+                (500,  "500 tool calls — legendary session!"),
+                (1000, "1,000 tool calls — absolute beast!"),
+            ]
+            for threshold, msg in milestones:
+                key = f"tc_{threshold}_{self._tracker._today_key}"
+                if tc >= threshold and key not in self._achievements_fired:
+                    self._achievements_fired.add(key)
+                    self.achievement.emit(msg)
+                    break
         self.session_updated.emit()
 
     @property

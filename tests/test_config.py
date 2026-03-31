@@ -110,7 +110,16 @@ def test_config_manager_migration(tmp_config_dir):
     cm = ConfigManager()
     keys = cm.get("api_keys")
     assert len(keys) == 1
-    assert keys[0]["key"] == "sk-ant-TESTKEY1234567890abcd"
+    # Key is now DPAPI-encrypted on Windows (dpapi: prefix)
+    raw_key = keys[0]["key"]
+    import sys
+    if sys.platform == "win32":
+        assert raw_key.startswith("dpapi:")
+        # But decrypted version should match original
+        decrypted = cm.get_api_keys_decrypted()
+        assert decrypted[0]["key"] == "sk-ant-TESTKEY1234567890abcd"
+    else:
+        assert raw_key == "sk-ant-TESTKEY1234567890abcd"
     assert "anthropic_api_key" not in cm.config
 
 

@@ -51,6 +51,7 @@ def main():
     sm.task_completed.connect(nm.notify_task_complete)
     sm.needs_attention.connect(nm.notify_needs_attention)
     sm.budget_alert.connect(nm.notify_budget_alert)
+    sm.achievement.connect(lambda msg: nm.notify_achievement(msg))
 
     port = config.get("hook_server_port", HOOK_SERVER_PORT)
     hs = HookServer(port)
