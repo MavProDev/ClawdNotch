@@ -137,7 +137,7 @@ def create_launcher(project_dir: Path, pythonw: str):
 
     # Write the launcher script
     launcher = CONFIG_DIR / "launcher.pyw"
-    launcher.write_text(f'''"""Claude Notch launcher — points to wherever the project currently lives."""
+    launcher.write_text('''"""Claude Notch launcher — points to wherever the project currently lives."""
 import json, subprocess, sys
 from pathlib import Path
 
@@ -152,7 +152,7 @@ def main():
     pkg_dir = Path(install_path) / "claude_notch"
     if not pkg_dir.is_dir():
         raise SystemExit(
-            f"claude_notch/ package not found at {{pkg_dir}}.\\n"
+            f"claude_notch/ package not found at {pkg_dir}.\\n"
             f"If you moved the folder, re-run create_shortcut.py from the new location."
         )
     # Launch with pythonw to avoid console window
@@ -234,7 +234,7 @@ def main():
         desktop = Path.home() / "Desktop"
     shortcut_path = desktop / "Claude Notch.lnk"
 
-    print(f"Creating desktop shortcut...")
+    print("Creating desktop shortcut...")
     ok, err = create_windows_shortcut(
         target=pythonw,
         shortcut_path=str(shortcut_path),
@@ -244,10 +244,10 @@ def main():
 
     if ok:
         print(f"  Created: {shortcut_path}")
-        print(f"\nDone! The shortcut now uses a stable launcher.")
-        print(f"If you move the project folder, just re-run:")
-        print(f"  python create_shortcut.py")
-        print(f"The shortcut itself never needs to change.")
+        print("\nDone! The shortcut now uses a stable launcher.")
+        print("If you move the project folder, just re-run:")
+        print("  python create_shortcut.py")
+        print("The shortcut itself never needs to change.")
     else:
         print(f"  Error: {err}")
         print("  Try running as administrator if it fails.")

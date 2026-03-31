@@ -1,9 +1,7 @@
 """Tests for claude_notch.system_monitor — SystemMonitor, process cache."""
 
-import sys
 from unittest.mock import patch, MagicMock
 
-import pytest
 
 from claude_notch.system_monitor import SystemMonitor, _find_claude_processes
 

@@ -3,12 +3,8 @@
 import json
 import socket
 import time
-import tempfile
-import os
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-import pytest
 
 from claude_notch.hooks import HookServer, install_hooks
 
@@ -52,7 +48,6 @@ def test_hook_server_accepts_tcp(qapp):
 
 def test_install_hooks_creates_ps1(tmp_config_dir):
     """install_hooks should create the PowerShell hook script."""
-    import claude_notch.config as cfg_mod
     import claude_notch.hooks as hooks_mod
 
     # Patch CONFIG_DIR in hooks module
@@ -60,7 +55,7 @@ def test_install_hooks_creates_ps1(tmp_config_dir):
         # Also patch the settings.json path so we don't touch real config
         fake_claude_dir = tmp_config_dir / ".claude"
         fake_claude_dir.mkdir(exist_ok=True)
-        fake_settings = fake_claude_dir / "settings.json"
+        fake_claude_dir / "settings.json"
 
         with patch("claude_notch.hooks.Path.home", return_value=tmp_config_dir):
             install_hooks(port=19748)

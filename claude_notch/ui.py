@@ -11,8 +11,6 @@ Extracted from claude_notch_v2_backup.py with inline bug fixes:
   BUG #14 — bare except → except Exception in SettingsDialog._check()
 """
 
-import sys
-import os
 import json
 import math
 import time
@@ -24,25 +22,22 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
     QSystemTrayIcon, QMenu, QLineEdit, QPushButton, QDialog, QCheckBox,
-    QScrollArea, QFrame, QComboBox, QFileDialog,
+    QComboBox, QFileDialog,
 )
-from PyQt6.QtCore import Qt, QTimer, QPoint, QRectF, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QTimer, QPoint, QRectF, pyqtSignal
 from PyQt6.QtGui import (
     QPainter, QColor, QFont, QPainterPath, QLinearGradient, QConicalGradient,
-    QPen, QBrush, QPixmap, QAction, QIcon, QCursor, QFontMetrics,
+    QPen, QBrush, QPixmap, QIcon, QCursor, QFontMetrics,
 )
 
 from claude_notch import __version__
 from claude_notch.config import (
-    C, THEMES, DEFAULT_CONFIG, HOOK_SERVER_PORT, CONFIG_DIR,
-    SPINNER_FRAMES, apply_theme, _redact_key, ConfigManager,
+    C, THEMES, HOOK_SERVER_PORT, SPINNER_FRAMES, apply_theme, _redact_key,
 )
-from claude_notch.sessions import Session, SessionManager, EmotionEngine
 from claude_notch.hooks import install_hooks
 from claude_notch.usage import (
-    UsageTracker, SparklineTracker, StreakTracker, TodoManager, export_usage_report,
+    export_usage_report,
 )
-from claude_notch.notifications import NotificationHistory
 from claude_notch.system_monitor import (
     SystemMonitor, _focus_window_by_pid, set_auto_start,
 )
@@ -56,7 +51,7 @@ except ImportError:
     HAS_TOAST = False
 
 try:
-    import keyboard as kb_module
+    import keyboard as kb_module  # noqa: F401
     HAS_KEYBOARD = True
 except ImportError:
     HAS_KEYBOARD = False
@@ -719,7 +714,8 @@ class ClaudeNotch(QWidget):
     MAX_EW, MAX_EH = 900, 900
 
     def __init__(self, sessions, config, tracker, emotion_engine=None,
-                 todo_manager=None, sparkline=None, notif_history=None, streaks=None):
+                 todo_manager=None, sparkline=None, notif_history=None, streaks=None,
+                 token_aggregator=None):
         super().__init__()
         self.sessions = sessions
         self.config = config
@@ -728,6 +724,7 @@ class ClaudeNotch(QWidget):
         self.todo_manager = todo_manager
         self.sparkline = sparkline
         self.notif_history = notif_history
+        self.token_aggregator = token_aggregator
         self.streaks = streaks
         self._started = datetime.now()
         self._expanded = self._pinned = self._dragging = self._was_exp = False
@@ -1783,15 +1780,36 @@ class ClaudeNotch(QWidget):
 
         # Token summary
         est_tok = td.get("est_tokens", 0)
-        tok_str = (
-            f"~{est_tok / 1_000_000:.1f}M" if est_tok > 1_000_000
-            else f"~{est_tok / 1000:.0f}k" if est_tok > 1000
-            else f"~{est_tok}"
-        )
-        pr.setPen(QPen(C["text_md"]))
-        pr.setFont(QFont("Segoe UI", 9))
-        pr.drawText(L, top, cw, 14, Qt.AlignmentFlag.AlignLeft,
-                    f"{tok_str} est. tokens {period_label}  \u00b7  {td.get('sessions', 0)} sessions")
+        # Real token data from Claude Code JSONL files (if available)
+        real_tokens = self.token_aggregator.get_today() if self.token_aggregator else None
+        if real_tokens and real_tokens.get("total", 0) > 0:
+            rt = real_tokens["total"]
+            tok_str = f"{rt / 1_000_000:.1f}M" if rt > 1_000_000 else f"{rt / 1000:.0f}k" if rt > 1000 else str(rt)
+            tok_detail = f"{tok_str} tokens today"
+            # Show breakdown: input/output/cache
+            inp = real_tokens.get("input", 0); out = real_tokens.get("output", 0)
+            cr = real_tokens.get("cache_read", 0); real_tokens.get("cache_write", 0)
+            parts = []
+            if inp: parts.append(f"in:{inp//1000}k")
+            if out: parts.append(f"out:{out//1000}k")
+            if cr: parts.append(f"cache:{cr//1000}k")
+            detail_str = "  ·  ".join(parts) if parts else ""
+            pr.setPen(QPen(C["coral"])); pr.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
+            pr.drawText(L, top, cw, 14, Qt.AlignmentFlag.AlignLeft, tok_detail)
+            if detail_str:
+                top += 15
+                pr.setPen(QPen(C["text_lo"])); pr.setFont(QFont("Segoe UI", 8))
+                pr.drawText(L, top, cw, 14, Qt.AlignmentFlag.AlignLeft, detail_str)
+        else:
+            est_tok = td.get("est_tokens", 0)
+            tok_str = (
+                f"~{est_tok / 1_000_000:.1f}M" if est_tok > 1_000_000
+                else f"~{est_tok / 1000:.0f}k" if est_tok > 1000
+                else f"~{est_tok}"
+            )
+            pr.setPen(QPen(C["text_md"])); pr.setFont(QFont("Segoe UI", 9))
+            pr.drawText(L, top, cw, 14, Qt.AlignmentFlag.AlignLeft,
+                        f"{tok_str} est. tokens {period_label}  \u00b7  {td.get('sessions', 0)} sessions")
         top += 18
 
         # Monthly bar

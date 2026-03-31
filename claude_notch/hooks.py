@@ -20,7 +20,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from claude_notch.config import CONFIG_DIR, HOOK_SERVER_PORT, _atomic_write
+from claude_notch.config import CONFIG_DIR, HOOK_SERVER_PORT
 
 
 class HookServer(QThread):
