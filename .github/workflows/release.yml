@@ -1,0 +1,25 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt pyinstaller
+      - run: >
+          pyinstaller --onefile --noconsole --icon=clawd.ico --name=ClawdNotch
+          --hidden-import=plyer.platforms.win.notification
+          --hidden-import=winreg
+          --hidden-import=winsound
+          claude_notch/__main__.py
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ClawdNotch.exe
+          generate_release_notes: true

@@ -1,5 +1,42 @@
 # Changelog
 
+## [3.0.0] - 2026-03-30
+
+### Architecture
+- Split 2,757-line monolith into 10-module Python package (`claude_notch/`)
+- Modules: config, sessions, hooks, usage, notifications, system_monitor, git_checkpoints, ui, __main__
+- No circular imports — clean dependency graph
+
+### Added
+- **Booping spinner** — Claude Code's exact `· ✻ ✽ ✶ ✳ ✢` animation with 90 thinking words
+- **Splash screen** — terminal-style matrix boot on every launch, animated Clawd, contact info
+- **First-run welcome** — auto-detect missing hooks, one-click install button
+- **50 tests** — unit, integration, smoke, and UI screenshot tests (pytest + pytest-qt)
+- **GitHub Actions CI** — lint (ruff) + test on every push/PR
+- **GitHub Actions Release** — PyInstaller .exe build on version tags, auto-uploaded to Releases
+- **Contact info** — @ReelDad, MavProGroup@gmail.com in splash and README
+
+### Fixed (20 bugs from audit)
+- **Bug #1**: ConfigManager now thread-safe (added threading.Lock)
+- **Bug #3**: Removed dead `was_expanded` config write
+- **Bug #4**: Monthly budget alerts now functional (were silently ignored)
+- **Bug #5**: Fixed 64-bit ctypes types for HWND/LPARAM in EnumWindows
+- **Bug #7**: Bar text contrast improved with dark shadow (WCAG AA)
+- **Bug #8**: Lock file TOCTOU documented
+- **Bug #9**: `install_hooks` now writes `~/.claude/settings.json` atomically
+- **Bug #10/11**: Desktop path no longer hardcodes OneDrive
+- **Bug #12**: Collapsed text truncation now uses dynamic QFontMetrics
+- **Bug #13**: Process scan cached with 10s TTL (was spawning PowerShell every 15s)
+- **Bug #14**: Bare `except` in SettingsDialog._check() → `except Exception`
+- **Bug #15**: create_shortcut.py config write now atomic
+- **Bug #20**: Streak counter behavior documented
+
+### Changed
+- Launcher uses `python -m claude_notch` (survives folder moves)
+- README rewritten for public launch — fun tone, quick start, feature grid
+- Process scan interval increased from 15s to 30s
+- Version bumped to 3.0.0
+
 ## [2.0.0] - 2026-03-30
 
 ### Added
