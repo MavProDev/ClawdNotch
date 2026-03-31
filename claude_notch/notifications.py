@@ -12,7 +12,7 @@ import os
 import threading
 from datetime import datetime
 
-from claude_notch.system_monitor import _is_terminal_focused
+from claude_notch.system_monitor import _is_terminal_focused, _focus_window_by_pid
 
 # ---------------------------------------------------------------------------
 # Conditional imports
@@ -60,13 +60,26 @@ class NotificationManager:
             threading.Thread(target=self._play_sound, args=("completion",), daemon=True).start()
         if self.config.get("toast_enabled") and HAS_TOAST and not self.config.get("dnd_mode"):
             threading.Thread(target=self._toast, args=(f"Claude Code — {project}", summary[:200], 5), daemon=True).start()
-    def notify_needs_attention(self, project):
+    def notify_needs_attention(self, project, pid=0):
         if self.history and self.config.get("notification_history_enabled", True):
             self.history.add(f"Claude Code — {project}", "Needs your attention!", "attention")
         if self.config.get("sound_enabled") and HAS_SOUND and not self._should_mute():
             threading.Thread(target=self._play_sound, args=("attention",), daemon=True).start()
         if self.config.get("toast_enabled") and HAS_TOAST and not self.config.get("dnd_mode"):
-            threading.Thread(target=self._toast, args=(f"Claude Code — {project}", "Needs your attention!", 10), daemon=True).start()
+            threading.Thread(target=self._toast_and_focus, args=(
+                f"Claude Code — {project}", "Needs your attention!", 10, pid), daemon=True).start()
+
+    @staticmethod
+    def _toast_and_focus(title, msg, timeout, pid):
+        """Show toast notification, then focus the terminal window."""
+        try:
+            toast_notify.notify(title=title, message=msg, app_name="Claude Notch", timeout=timeout)
+        except Exception: pass
+        # Give the toast a moment to display, then focus the terminal
+        if pid:
+            import time
+            time.sleep(0.5)
+            _focus_window_by_pid(pid)
     def notify_budget_alert(self, message):
         if self.history: self.history.add("Budget Alert", message, "budget")
         if HAS_TOAST and not self.config.get("dnd_mode"):
