@@ -157,34 +157,21 @@ class SettingsDialog(QDialog):
             "QPushButton{background:#d97757;color:white;border:none;padding:10px 20px;border-radius:6px;font-weight:bold;font-size:13px;}"
             "QPushButton:hover{background:#eb9b78;}"
         )
-        from PyQt6.QtWidgets import QRadioButton
         L = QVBoxLayout(self)
         L.setSpacing(8)
         L.setContentsMargins(24, 20, 24, 20)
 
-        # -- Display Mode --
-        L.addWidget(QLabel("How do you use Claude Code?"))
-        sub_h = QHBoxLayout()
-        self.rb_max = QRadioButton("Subscription (Pro/Max/Team)")
-        self.rb_api = QRadioButton("API Tokens (pay-per-use)")
-        cur_mode = config.get("subscription_mode", "max")
-        self.rb_max.setChecked(cur_mode == "max")
-        self.rb_api.setChecked(cur_mode == "api")
-        sub_h.addWidget(self.rb_max)
-        sub_h.addWidget(self.rb_api)
-        sub_h.addStretch()
-        L.addLayout(sub_h)
-        sn = QLabel(
-            "This only changes what Notch displays. Subscription hides cost estimates\n"
-            "(you already pay flat-rate). API mode shows estimated $ cost per session."
+        # -- API Keys (prominent, first section) --
+        sec_api = QLabel("API Keys — Rate Limit Monitoring")
+        sec_api.setStyleSheet("color:#d97757;font-size:13px;font-weight:bold;")
+        L.addWidget(sec_api)
+        api_note = QLabel(
+            "Add your Anthropic API key(s) to monitor rate limits in real-time. "
+            "Supports multiple keys across projects. Keys never leave your machine."
         )
-        sn.setStyleSheet("color:#5a504c;font-size:10px;")
-        sn.setWordWrap(True)
-        L.addWidget(sn)
-        L.addSpacing(6)
-
-        # -- API Keys --
-        L.addWidget(QLabel("API Keys:"))
+        api_note.setStyleSheet("color:#9b948e;font-size:11px;")
+        api_note.setWordWrap(True)
+        L.addWidget(api_note)
         self._keys_layout = QVBoxLayout()
         self._keys_layout.setSpacing(4)
         self._key_rows = []
@@ -193,12 +180,12 @@ class SettingsDialog(QDialog):
         L.addLayout(self._keys_layout)
         add_row = QHBoxLayout()
         self._new_label = QLineEdit()
-        self._new_label.setPlaceholderText("Label (e.g. MyProject)")
-        self._new_label.setMaximumWidth(140)
+        self._new_label.setPlaceholderText("Label")
+        self._new_label.setMaximumWidth(100)
         self._new_key = QLineEdit()
-        self._new_key.setPlaceholderText("sk-ant-...")
+        self._new_key.setPlaceholderText("sk-ant-api03-...")
         self._new_key.setEchoMode(QLineEdit.EchoMode.Password)
-        add_btn = QPushButton("Add")
+        add_btn = QPushButton("Add Key")
         add_btn.setStyleSheet(
             "QPushButton{background:#2c2c34;font-size:11px;padding:6px 14px;}"
             "QPushButton:hover{background:#3c3c4c;}"
@@ -208,9 +195,30 @@ class SettingsDialog(QDialog):
         add_row.addWidget(self._new_key)
         add_row.addWidget(add_btn)
         L.addLayout(add_row)
-        kn = QLabel("Keys are stored locally in ~/.claude-notch/config.json")
+        kn = QLabel("Stored locally at ~/.claude-notch/config.json — never uploaded anywhere")
         kn.setStyleSheet("color:#5a504c;font-size:10px;")
         L.addWidget(kn)
+        L.addSpacing(8)
+
+        # -- Usage Mode --
+        sec_mode = QLabel("Usage Mode")
+        sec_mode.setStyleSheet("color:#d97757;font-size:13px;font-weight:bold;")
+        L.addWidget(sec_mode)
+        sub_h = QHBoxLayout()
+        from PyQt6.QtWidgets import QRadioButton
+        self.rb_max = QRadioButton("Subscription (Pro/Max/Team)")
+        self.rb_api = QRadioButton("API Tokens (pay-per-use)")
+        cur_mode = config.get("subscription_mode", "max")
+        self.rb_max.setChecked(cur_mode == "max")
+        self.rb_api.setChecked(cur_mode == "api")
+        sub_h.addWidget(self.rb_max)
+        sub_h.addWidget(self.rb_api)
+        sub_h.addStretch()
+        L.addLayout(sub_h)
+        sn = QLabel("Subscription mode hides cost estimates. API mode shows $ per session.")
+        sn.setStyleSheet("color:#5a504c;font-size:10px;")
+        sn.setWordWrap(True)
+        L.addWidget(sn)
         L.addSpacing(6)
 
         # -- Appearance --
@@ -351,6 +359,15 @@ class SettingsDialog(QDialog):
         pl.setStyleSheet("color:#5a504c;font-size:10px;")
         L.addWidget(pl)
         L.addStretch()
+        # Check for Updates button
+        upd_btn = QPushButton("Check for Updates")
+        upd_btn.setStyleSheet(
+            "QPushButton{background:#2c2c34;font-size:11px;padding:8px 14px;}"
+            "QPushButton:hover{background:#3c3c4c;}"
+        )
+        upd_btn.clicked.connect(self._check_updates)
+        L.addWidget(upd_btn)
+        L.addSpacing(4)
         br = QHBoxLayout()
         self._ib = QPushButton()
         self._style_ib(self._check())
@@ -409,6 +426,29 @@ class SettingsDialog(QDialog):
             for w in row["widgets"]:
                 w.setParent(None)
             self._key_rows[idx] = None  # mark as removed
+
+    def _check_updates(self):
+        """Manually check for updates from Settings."""
+        import threading
+        from claude_notch.usage import check_for_updates, open_release_page
+        def _callback(version, url):
+            show_clawd_toast(
+                f"ClawdNotch {version} available!",
+                "Click to download the latest version.",
+                12, 0, "info",
+            )
+        def _run():
+            # Force check by clearing the cache
+            self.config.set("last_update_check", "", save_now=False)
+            check_for_updates(self.config, _callback)
+            if not hasattr(self, '_update_found'):
+                from claude_notch import __version__
+                QTimer.singleShot(0, lambda: show_clawd_toast(
+                    "You're up to date!",
+                    f"ClawdNotch v{__version__} is the latest version.",
+                    5, 0, "completion",
+                ))
+        threading.Thread(target=_run, daemon=True).start()
 
     def _browse_wav(self, line_edit):
         path, _ = QFileDialog.getOpenFileName(
