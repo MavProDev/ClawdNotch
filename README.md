@@ -26,6 +26,8 @@ ClawdNotch is a desktop overlay that lives at the top of your screen and tracks 
 
 **3.** When prompted, install the Claude Code hooks and restart Claude Code. ClawdNotch will handle the rest.
 
+> **Windows SmartScreen warning:** On first run, Windows may say "Windows protected your PC." This is normal for unsigned open-source software. Click **"More info"** then **"Run anyway."** ClawdNotch is fully open-source — read every line of code right here in this repo.
+
 ---
 
 ## Features
