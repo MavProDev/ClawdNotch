@@ -1524,22 +1524,28 @@ class ClaudeNotch(QWidget):
                     ["where", "claude"], capture_output=True, timeout=3,
                     creationflags=0x08000000,
                 )
-                if check.returncode == 0:
-                    # Try Windows Terminal first (nicer UX), fall back to cmd.exe
-                    wt_check = subprocess.run(
-                        ["where", "wt"], capture_output=True, timeout=3,
-                        creationflags=0x08000000,
+                if check.returncode != 0:
+                    show_clawd_toast(
+                        "Claude not found",
+                        "Make sure 'claude' is on your PATH.",
+                        6, 0, "attention",
                     )
-                    if wt_check.returncode == 0:
-                        subprocess.Popen(
-                            ["wt", "new-tab", "cmd", "/k", "claude"],
-                            creationflags=0x00000008,
-                        )
-                    else:
-                        subprocess.Popen(
-                            ["cmd", "/c", "start", "cmd", "/k", "claude"],
-                            creationflags=0x00000008,
-                        )
+                    return
+                # Try Windows Terminal first (nicer UX), fall back to cmd.exe
+                wt_check = subprocess.run(
+                    ["where", "wt"], capture_output=True, timeout=3,
+                    creationflags=0x08000000,
+                )
+                if wt_check.returncode == 0:
+                    subprocess.Popen(
+                        ["wt", "new-tab", "cmd", "/k", "claude"],
+                        creationflags=0x00000008,
+                    )
+                else:
+                    subprocess.Popen(
+                        ["cmd", "/c", "start", "cmd", "/k", "claude"],
+                        creationflags=0x00000008,
+                    )
             except Exception:
                 pass
 
