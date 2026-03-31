@@ -12,7 +12,7 @@ from claude_notch.usage import UsageTracker, UsagePoller, SparklineTracker, Stre
 from claude_notch.notifications import NotificationManager, NotificationHistory
 from claude_notch.system_monitor import acquire_lock, release_lock
 from claude_notch.git_checkpoints import GitCheckpoints
-from claude_notch.ui import ClaudeNotch, make_tray
+from claude_notch.ui import ClaudeNotch, SplashScreen, SettingsDialog, make_tray
 
 # Conditional imports
 try:
@@ -58,7 +58,12 @@ def main():
     hs.start()
 
     notch = ClaudeNotch(sm, config, tracker, emotion, todos, sparkline, notif_history, streaks)
-    notch.show()
+
+    # Splash screen — shows on every launch, skippable
+    first_launch = not SettingsDialog._check()
+    splash = SplashScreen(config, first_launch=first_launch)
+    splash.finished.connect(lambda: notch.show())
+    splash.show()
 
     up = UsagePoller(config)
     up.usage_updated.connect(notch.update_usage)

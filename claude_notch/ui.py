@@ -35,7 +35,7 @@ from PyQt6.QtGui import (
 from claude_notch import __version__
 from claude_notch.config import (
     C, THEMES, DEFAULT_CONFIG, HOOK_SERVER_PORT, CONFIG_DIR,
-    apply_theme, _redact_key, ConfigManager,
+    SPINNER_FRAMES, apply_theme, _redact_key, ConfigManager,
 )
 from claude_notch.sessions import Session, SessionManager, EmotionEngine
 from claude_notch.hooks import install_hooks
@@ -495,6 +495,213 @@ class SettingsDialog(QDialog):
             )
         except Exception:
             return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SplashScreen — terminal-style boot animation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class SplashScreen(QWidget):
+    """Terminal-style boot splash. Shows on every launch. Skippable."""
+
+    finished = pyqtSignal()  # emitted when splash should close and notch should show
+
+    LOADING_LINES = [
+        "Initializing hook server on :19748...",
+        "Loading session state...",
+        "Scanning for Claude processes...",
+        "Applying theme: coral",
+        "ClawdNotch v{version} ready. Let's go.",
+    ]
+
+    def __init__(self, config, first_launch=False):
+        super().__init__()
+        self._config = config
+        self._first_launch = first_launch
+        self._bounce = 0.0
+        self._pulse = 0.0
+        self._visible_lines = []
+        self._line_index = 0
+        self._phase = "loading"  # loading -> done -> fading
+        self._opacity = 1.0
+        self._show_button = False
+
+        # Frameless, translucent, always on top
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedSize(480, 360)
+
+        # Center on screen
+        scr = QApplication.primaryScreen().geometry()
+        self.move(scr.x() + (scr.width() - 480) // 2,
+                  scr.y() + (scr.height() - 360) // 2)
+
+        # Animation timer (30fps for Clawd bounce)
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setInterval(33)
+        self._anim_timer.timeout.connect(self._tick)
+        self._anim_timer.start()
+
+        # Line reveal timer
+        delay = 150 if config.get("auto_start") else 250
+        self._line_timer = QTimer(self)
+        self._line_timer.setInterval(delay)
+        self._line_timer.timeout.connect(self._next_line)
+        self._line_timer.start()
+
+        # Format version into loading lines
+        from claude_notch import __version__
+        self._lines = [l.format(version=__version__) for l in self.LOADING_LINES]
+
+    def _tick(self):
+        self._bounce += 0.08
+        self._pulse += 0.1
+        if self._phase == "fading":
+            self._opacity -= 0.02  # ~500ms fade at 33ms tick
+            self.setWindowOpacity(max(0, self._opacity))
+            if self._opacity <= 0:
+                self._anim_timer.stop()
+                self.finished.emit()
+                self.close()
+        self.update()
+
+    def _next_line(self):
+        if self._line_index < len(self._lines):
+            frame = SPINNER_FRAMES[self._line_index % len(SPINNER_FRAMES)]
+            self._visible_lines.append(f"[{frame}] {self._lines[self._line_index]}")
+            self._line_index += 1
+        else:
+            self._line_timer.stop()
+            if self._first_launch:
+                self._show_button = True
+                self._phase = "done"
+            else:
+                # Pause 500ms then start fading
+                QTimer.singleShot(500, self._start_fade)
+
+    def _start_fade(self):
+        self._phase = "fading"
+
+    def _dismiss(self):
+        """Immediately dismiss (skip button or click/escape)."""
+        self._line_timer.stop()
+        self._anim_timer.stop()
+        self.finished.emit()
+        self.close()
+
+    def _install_and_go(self):
+        """First-launch: install hooks then dismiss."""
+        from claude_notch.hooks import install_hooks
+        from claude_notch.config import HOOK_SERVER_PORT
+        install_hooks(self._config.get("hook_server_port", HOOK_SERVER_PORT))
+        self._visible_lines.append("[✶] Hooks installed! Restart Claude Code sessions.")
+        self._show_button = False
+        self.update()
+        QTimer.singleShot(1500, self._dismiss)
+
+    def mousePressEvent(self, e):
+        if self._show_button:
+            # Check if click is on the Install button area
+            btn_x = (480 - 220) // 2
+            btn_y = 290
+            if btn_x <= e.pos().x() <= btn_x + 220 and btn_y <= e.pos().y() <= btn_y + 36:
+                self._install_and_go()
+                return
+            # Check Skip link
+            skip_y = 330
+            if 180 <= e.pos().x() <= 300 and skip_y <= e.pos().y() <= skip_y + 20:
+                self._dismiss()
+                return
+        else:
+            self._dismiss()
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_Escape:
+            self._dismiss()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+
+        # Background with rounded corners
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(0, 0, w, h), 16, 16)
+        p.setBrush(QBrush(QColor(12, 12, 14)))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawPath(path)
+
+        # Border glow
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor(C["coral"].red(), C["coral"].green(), C["coral"].blue(), 60), 2.0))
+        p.drawPath(path)
+        p.setPen(QPen(C["coral"], 1.0))
+        p.drawPath(path)
+
+        # Animated Clawd (centered, large)
+        ps = 4.0
+        clawd_w = 11 * ps
+        cx = (w - clawd_w) / 2
+        cy = 30
+        draw_clawd(p, cx, cy, ps, self._bounce, None, 0, 0, "neutral",
+                   eye_glow=True, glow_phase=self._pulse)
+
+        # Title
+        p.setPen(QPen(C["coral"]))
+        p.setFont(QFont("Segoe UI", 24, QFont.Weight.Bold))
+        p.drawText(0, 85, w, 40, Qt.AlignmentFlag.AlignCenter, "ClawdNotch")
+
+        # Version
+        from claude_notch import __version__
+        p.setPen(QPen(C["text_lo"]))
+        p.setFont(QFont("Segoe UI", 10))
+        p.drawText(0, 118, w, 20, Qt.AlignmentFlag.AlignCenter, f"v{__version__}")
+
+        # Loading lines (terminal style)
+        p.setFont(QFont("Consolas", 10))
+        y = 150
+        for line in self._visible_lines:
+            # Bracket char in coral, rest in text_md
+            if line.startswith("["):
+                bracket_end = line.index("]") + 1
+                p.setPen(QPen(C["coral"]))
+                p.drawText(40, y, w - 80, 18, Qt.AlignmentFlag.AlignLeft, line[:bracket_end])
+                p.setPen(QPen(C["text_md"]))
+                fm = p.fontMetrics()
+                offset = fm.horizontalAdvance(line[:bracket_end])
+                p.drawText(40 + offset, y, w - 80 - offset, 18, Qt.AlignmentFlag.AlignLeft, line[bracket_end:])
+            else:
+                p.setPen(QPen(C["text_md"]))
+                p.drawText(40, y, w - 80, 18, Qt.AlignmentFlag.AlignLeft, line)
+            y += 22
+
+        # First-launch: Install button + Skip
+        if self._show_button:
+            btn_w, btn_h = 220, 36
+            btn_x = (w - btn_w) // 2
+            btn_y = 290
+            p.setBrush(QBrush(C["coral"]))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(QRectF(btn_x, btn_y, btn_w, btn_h), 8, 8)
+            p.setPen(QPen(QColor(255, 255, 255)))
+            p.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+            p.drawText(btn_x, btn_y, btn_w, btn_h, Qt.AlignmentFlag.AlignCenter, "Install Hooks & Start")
+
+            p.setPen(QPen(C["text_lo"]))
+            p.setFont(QFont("Segoe UI", 9))
+            p.drawText(0, 330, w, 20, Qt.AlignmentFlag.AlignCenter, "Skip")
+
+        # Contact line (always visible)
+        p.setPen(QPen(C["text_lo"]))
+        p.setFont(QFont("Segoe UI", 9))
+        p.drawText(0, h - 28, w, 18, Qt.AlignmentFlag.AlignCenter,
+                   "@ReelDad  \u00b7  MavProGroup@gmail.com  \u00b7  Bugs? Ideas? Don't hesitate to reach out.")
+
+        p.end()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1279,7 +1486,12 @@ class ClaudeNotch(QWidget):
             p.setPen(Qt.PenStyle.NoPen)
             p.drawEllipse(QRectF(dx - 3.5, dy - 3.5, 7, 7))
             a = self.sessions.get_active_sessions()
-            if a and a[0].state == "waiting":
+            if a and a[0].state == "working":
+                frame_idx = int(self._pulse) % len(SPINNER_FRAMES)
+                spinner_char = SPINNER_FRAMES[frame_idx]
+                word = a[0].thinking_word or "Working"
+                tx = f"{a[0].project_name}: {spinner_char} {word}..."
+            elif a and a[0].state == "waiting":
                 tx = f"{a[0].project_name}: Needs input!"
             elif a:
                 tx = f"{a[0].project_name}: {a[0].current_tool or a[0].state}"
@@ -1407,12 +1619,15 @@ class ClaudeNotch(QWidget):
             pr.setFont(QFont("Segoe UI", 9))
             if s.state == "waiting":
                 st = "Needs input!"
-            elif (self.config.get("session_estimate_enabled")
-                  and avg_min > 0 and s.state == "working"):
-                remaining = max(0, avg_min - s.age_minutes)
-                st = (f"{s.state} \u00b7 {s.age_str} \u00b7 ~{remaining}m left"
-                      if remaining > 0
-                      else f"{s.state} \u00b7 {s.age_str}")
+            elif s.state == "working":
+                frame_idx = int(self._pulse) % len(SPINNER_FRAMES)
+                spinner_char = SPINNER_FRAMES[frame_idx]
+                word = s.thinking_word or "Working"
+                if self.config.get("session_estimate_enabled") and avg_min > 0:
+                    remaining = max(0, avg_min - s.age_minutes)
+                    st = f"{spinner_char} {word}...  \u00b7  {s.age_str}" + (f"  \u00b7  ~{remaining}m left" if remaining > 0 else "")
+                else:
+                    st = f"{spinner_char} {word}...  \u00b7  {s.age_str}"
             else:
                 st = f"{s.state}  \u00b7  {s.age_str}"
             pr.drawText(int(L + cw * 0.55), top, int(cw * 0.45), rh,
