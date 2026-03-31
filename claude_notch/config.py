@@ -155,14 +155,18 @@ def apply_theme(name):
     C["coral_light"] = QColor(*t["accent_light"])
 
 
-def _atomic_write(path: Path, data: dict):
-    """Write JSON atomically: write to temp file, then rename over target."""
+def _atomic_write(path: Path, data: dict) -> bool:
+    """Write JSON atomically: write to temp file, then rename over target.
+
+    Returns True on success, False on failure.
+    """
     try:
         fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump(data, f, indent=2)
             os.replace(tmp, path)
+            return True
         except Exception:
             try:
                 os.unlink(tmp)
@@ -171,6 +175,7 @@ def _atomic_write(path: Path, data: dict):
             raise
     except Exception as e:
         print(f"[Write] Failed to save {path.name}: {e}", file=sys.stderr)
+        return False
 
 
 def _redact_key(key: str) -> str:

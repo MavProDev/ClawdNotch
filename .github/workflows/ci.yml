@@ -9,7 +9,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install ruff
-      - run: python -m ruff check . --select F --ignore F401
+      - run: python -m ruff check . --select F
   test:
     runs-on: windows-latest
     needs: lint

@@ -32,17 +32,6 @@ try:
 except ImportError:
     HAS_WINREG = False
 
-try:
-    import winsound  # noqa: F401
-    HAS_SOUND = True
-except ImportError:
-    HAS_SOUND = False
-
-try:
-    import keyboard as kb_module  # noqa: F401
-    HAS_KEYBOARD = True
-except ImportError:
-    HAS_KEYBOARD = False
 
 # ---------------------------------------------------------------------------
 # BUG FIX #13 -- cache for _find_claude_processes

@@ -9,6 +9,7 @@ Extracted from claude_notch_v2_backup.py with BUG FIX #4 (monthly budget alert).
 
 import sys
 import json
+import time
 import threading
 import random
 from datetime import datetime, timedelta
@@ -192,6 +193,8 @@ class SessionManager(QObject):
         self._sparkline = sparkline
         self._config = config
         self._completed_durations = []
+        self._active_cache = []
+        self._active_cache_ts = 0.0
     def handle_event(self, event):
         et = event.get("event", "")
         sid = event.get("session_id", "unknown")
@@ -219,14 +222,14 @@ class SessionManager(QObject):
                 tool_name = event.get("tool_name", "tool")
                 if self._todos:
                     self._todos.process_tool_event(sid, tool_name, event.get("tool_input", ""))
-                s.tasks_completed.append({"summary": f"Used {tool_name}", "time": datetime.now().strftime("%H:%M"), "status": "completed"})
+                s.tasks_completed.append({"summary": f"Used {tool_name}", "time": datetime.now().strftime("%Y-%m-%d %H:%M"), "status": "completed"})
                 s.tasks_completed = s.tasks_completed[-20:]
             elif et == "PostToolUseFailure": s.state = "error"; s.current_tool = ""
             elif et == "Notification": s.state = "waiting"; self.needs_attention.emit(s.project_name, s.pid)
             elif et == "Stop":
                 s.state = "idle"  # Task done but session still alive -- waiting for next prompt
                 sm = event.get("summary", "Task completed")
-                s.tasks_completed.append({"summary": sm, "time": datetime.now().strftime("%H:%M"), "status": "completed"})
+                s.tasks_completed.append({"summary": sm, "time": datetime.now().strftime("%Y-%m-%d %H:%M"), "status": "completed"})
                 self.task_completed.emit(s.project_name, sm)
             elif et == "SessionEnd":
                 s.state = "completed"
@@ -373,11 +376,17 @@ class SessionManager(QObject):
             self.session_updated.emit()
 
     def get_active_sessions(self):
+        now = time.monotonic()
+        if now - self._active_cache_ts < 0.1:
+            return list(self._active_cache)
         with self._lock:
             a = [s for s in self.sessions.values()
                  if s.state != "completed"
                  and (datetime.now() - s.last_activity).total_seconds() < 7200]
-            a.sort(key=lambda s: s.last_activity, reverse=True); return a
+            a.sort(key=lambda s: s.last_activity, reverse=True)
+        self._active_cache = a
+        self._active_cache_ts = now
+        return a
     def get_all_tasks(self, limit=10):
         t = []
         with self._lock:

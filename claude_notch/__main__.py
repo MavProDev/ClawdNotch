@@ -8,7 +8,7 @@ from claude_notch import __version__
 from claude_notch.config import ConfigManager, apply_theme, HOOK_SERVER_PORT
 from claude_notch.sessions import SessionManager, EmotionEngine
 from claude_notch.hooks import HookServer
-from claude_notch.usage import UsageTracker, UsagePoller, SparklineTracker, StreakTracker, TodoManager, TokenAggregator, check_for_updates, open_release_page
+from claude_notch.usage import UsageTracker, UsagePoller, SparklineTracker, StreakTracker, TodoManager, TokenAggregator, check_for_updates
 from claude_notch.notifications import NotificationManager, NotificationHistory
 from claude_notch.system_monitor import acquire_lock, release_lock
 from claude_notch.git_checkpoints import GitCheckpoints
@@ -65,16 +65,9 @@ def main():
     splash = SplashScreen(config, first_launch=first_launch)
     def _on_splash_done():
         notch.show()
-        # Check for updates in background after splash
+        # Check for updates in background after splash — use signal for thread safety
         def _update_callback(version, url):
-            from claude_notch.ui import show_clawd_toast
-            QTimer.singleShot(2000, lambda: show_clawd_toast(
-                f"ClawdNotch {version} available!",
-                "Click to download the latest version.",
-                12, 0, "info",
-            ))
-            # Store URL so clicking the toast can open it
-            notch._update_url = url
+            notch._update_signal.emit(version, url)
         threading.Thread(
             target=check_for_updates, args=(config, _update_callback), daemon=True
         ).start()

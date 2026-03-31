@@ -111,7 +111,7 @@ class UsageTracker:
             elif event_type == "SessionStart":
                 today["sessions"] += 1
             # Save every 10th event to avoid thrashing disk
-            total = today["tool_calls"] + today["prompts"]
+            total = today["tool_calls"] + today["prompts"] + today.get("sessions", 0)
             if total % 10 == 0:
                 self._save()
 
@@ -563,7 +563,6 @@ class TokenAggregator:
         if not self.CLAUDE_PROJECTS_DIR.exists():
             return
 
-        datetime.now().strftime("%Y-%m-%d")
         # Only scan files modified in the last 24 hours for today's stats,
         # and within the last 31 days for monthly totals
         cutoff_ts = time.time() - (31 * 86400)
@@ -660,7 +659,6 @@ def check_for_updates(config, on_update_available=None):
         config: ConfigManager instance
         on_update_available: callback(version_str, download_url) called if update found
     """
-    import webbrowser
     from claude_notch import __version__
 
     # Only check once per day
@@ -690,8 +688,8 @@ def check_for_updates(config, on_update_available=None):
 
 def open_release_page(url: str):
     """Open a GitHub release page in the default browser."""
-    import webbrowser
     try:
+        import webbrowser
         webbrowser.open(url)
     except Exception:
         pass

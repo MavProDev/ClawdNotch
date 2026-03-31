@@ -14,7 +14,6 @@ Extracted from claude_notch_v2_backup.py with inline bug fixes:
 import json
 import math
 import time
-import threading
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -41,20 +40,7 @@ from claude_notch.usage import (
 from claude_notch.system_monitor import (
     SystemMonitor, _focus_window_by_pid, set_auto_start,
 )
-from claude_notch.git_checkpoints import GitCheckpoints
 
-# ── Conditional imports ──
-try:
-    from plyer import notification as toast_notify
-    HAS_TOAST = True
-except ImportError:
-    HAS_TOAST = False
-
-try:
-    import keyboard as kb_module  # noqa: F401
-    HAS_KEYBOARD = True
-except ImportError:
-    HAS_KEYBOARD = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -86,13 +72,15 @@ EMOTION_STYLES = {
 # STATUS COLORS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-STATUS_COLORS = {
-    "idle": C["text_lo"],
-    "working": C["amber"],
-    "waiting": C["coral"],
-    "completed": C["green"],
-    "error": C["red"],
-}
+def _status_colors():
+    """Build status colors from current theme. Called at paint time so theme changes apply."""
+    return {
+        "idle": C["text_lo"],
+        "working": C["amber"],
+        "waiting": C["coral"],
+        "completed": C["green"],
+        "error": C["red"],
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -242,6 +230,15 @@ class SettingsDialog(QDialog):
         self.dim_inactive = QCheckBox("Dim when no sessions active")
         self.dim_inactive.setChecked(config.get("dim_when_inactive", True))
         L.addWidget(self.dim_inactive)
+        dim_h = QHBoxLayout()
+        dim_h.addWidget(QLabel("Dim opacity:"))
+        self.dim_val = QLineEdit(str(config.get("dim_opacity", 0.55)))
+        self.dim_val.setMaximumWidth(60)
+        self.dim_val.setPlaceholderText("0.55")
+        dim_h.addWidget(self.dim_val)
+        dim_h.addWidget(QLabel("(0.3 = very dim, 0.9 = barely dim)"))
+        dim_h.addStretch()
+        L.addLayout(dim_h)
         L.addSpacing(4)
 
         # -- Notifications --
@@ -313,6 +310,17 @@ class SettingsDialog(QDialog):
         self.sys_res = QCheckBox("System resources (CPU/RAM)")
         self.sys_res.setChecked(config.get("system_resources_enabled", True))
         L.addWidget(self.sys_res)
+        model_h = QHBoxLayout()
+        model_h.addWidget(QLabel("Default model:"))
+        self.model_combo2 = QComboBox()
+        for mn in ("sonnet", "opus", "haiku", "sonnet-1m", "opus-1m"):
+            self.model_combo2.addItem(mn, mn)
+        midx = self.model_combo2.findData(config.get("default_model", "sonnet"))
+        if midx >= 0:
+            self.model_combo2.setCurrentIndex(midx)
+        model_h.addWidget(self.model_combo2)
+        model_h.addStretch()
+        L.addLayout(model_h)
         self.multi_mon = QCheckBox("Multi-monitor support")
         self.multi_mon.setChecked(config.get("multi_monitor", False))
         L.addWidget(self.multi_mon)
@@ -425,29 +433,44 @@ class SettingsDialog(QDialog):
             row = self._key_rows[idx]
             for w in row["widgets"]:
                 w.setParent(None)
+            self._keys_layout.removeItem(row["layout"])
             self._key_rows[idx] = None  # mark as removed
+
+    _update_toast_signal = pyqtSignal(str, str, int)  # title, message, timeout
+
+    def _init_update_signal(self):
+        """Connect the thread-safe toast signal. Called once after __init__."""
+        self._update_toast_signal.connect(
+            lambda t, m, to: show_clawd_toast(t, m, to, 0, "info")
+        )
 
     def _check_updates(self):
         """Manually check for updates from Settings."""
         import threading
-        from claude_notch.usage import check_for_updates, open_release_page
+        from claude_notch.usage import check_for_updates
+        if not hasattr(self, '_update_toast_connected'):
+            self._init_update_signal()
+            self._update_toast_connected = True
+
         def _callback(version, url):
-            show_clawd_toast(
+            self._update_found = True
+            self._update_toast_signal.emit(
                 f"ClawdNotch {version} available!",
                 "Click to download the latest version.",
-                12, 0, "info",
+                12,
             )
+
         def _run():
-            # Force check by clearing the cache
+            self._update_found = False
             self.config.set("last_update_check", "", save_now=False)
             check_for_updates(self.config, _callback)
-            if not hasattr(self, '_update_found'):
+            if not self._update_found:
                 from claude_notch import __version__
-                QTimer.singleShot(0, lambda: show_clawd_toast(
+                self._update_toast_signal.emit(
                     "You're up to date!",
                     f"ClawdNotch v{__version__} is the latest version.",
-                    5, 0, "completion",
-                ))
+                    5,
+                )
         threading.Thread(target=_run, daemon=True).start()
 
     def _browse_wav(self, line_edit):
@@ -493,6 +516,8 @@ class SettingsDialog(QDialog):
             "color_theme": self.theme_combo.currentData() or "coral",
             "mini_mode": self.mini_mode.isChecked(),
             "dim_when_inactive": self.dim_inactive.isChecked(),
+            "dim_opacity": max(0.3, min(0.9, _float(self.dim_val.text(), 0.55))),
+            "default_model": self.model_combo2.currentData() or "sonnet",
             "click_to_focus": self.click_focus.isChecked(),
             "sparkline_enabled": self.sparkline.isChecked(),
             "clipboard_on_click": self.clipboard.isChecked(),
@@ -571,7 +596,12 @@ class ClawdToast(QWidget):
         self.setFixedSize(340, 88)
 
         # Position: bottom-right corner, stacked above existing toasts
-        scr = QApplication.primaryScreen().geometry()
+        screen = QApplication.primaryScreen()
+        if not screen:
+            self.close()
+            self.deleteLater()
+            return
+        scr = screen.geometry()
         stack_offset = len(ClawdToast._active_toasts) * 96
         self._target_x = scr.x() + scr.width() - 340 - 16
         self._target_y = scr.y() + scr.height() - 88 - 16 - stack_offset
@@ -746,7 +776,12 @@ class SplashScreen(QWidget):
         self.setFixedSize(480, 360)
 
         # Center on screen
-        scr = QApplication.primaryScreen().geometry()
+        screen = QApplication.primaryScreen()
+        if screen:
+            scr = screen.geometry()
+        else:
+            from PyQt6.QtCore import QRect
+            scr = QRect(0, 0, 1920, 1080)
         self.move(scr.x() + (scr.width() - 480) // 2,
                   scr.y() + (scr.height() - 360) // 2)
 
@@ -919,6 +954,7 @@ class SplashScreen(QWidget):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class ClaudeNotch(QWidget):
+    _update_signal = pyqtSignal(str, str)  # version, url — thread-safe update notification
     HW, HH, EW, EH = 300, 34, 560, 500
     VW, VH = 34, 200
 
@@ -1061,9 +1097,19 @@ class ClaudeNotch(QWidget):
         self._cache_timer.start()
         self._refresh_cache()
 
+        self._update_signal.connect(self._on_update_available)
         sessions.session_updated.connect(self.update)
 
     # ── helpers / properties ──
+
+    def _on_update_available(self, version, url):
+        """Slot for _update_signal — runs on the main thread."""
+        self._update_url = url
+        show_clawd_toast(
+            f"ClawdNotch {version} available!",
+            "Click to download the latest version.",
+            12, 0, "info",
+        )
 
     def _screen_geom(self):
         if self.config.get("multi_monitor", False):
@@ -1454,15 +1500,7 @@ class ClaudeNotch(QWidget):
     def _do_export(self):
         fmt = self.config.get("export_format", "markdown")
         path = export_usage_report(self.tracker, self.config, fmt)
-        if HAS_TOAST:
-            threading.Thread(
-                target=lambda: toast_notify.notify(
-                    title="Claude Notch",
-                    message=f"Report saved to {Path(path).name}",
-                    app_name="Claude Notch", timeout=5,
-                ),
-                daemon=True,
-            ).start()
+        show_clawd_toast("Export Complete", f"Saved: {Path(path).name}", 5, 0, "completion")
 
     def _eye_shift(self):
         try:
@@ -1567,15 +1605,15 @@ class ClaudeNotch(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         p.drawPath(path)
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(QColor(217, 119, 87, 40), 3.0))
+        p.setPen(QPen(QColor(C["coral"].red(), C["coral"].green(), C["coral"].blue(), 40), 3.0))
         p.drawPath(path)
         p.setPen(QPen(C["coral"], 1.0))
         p.drawPath(path)
         if t > 0.2:
             a = min(255, int(t * 300))
-            c1 = QColor(217, 119, 87, 0)
-            c2 = QColor(217, 119, 87, a)
-            c3 = QColor(235, 155, 120, a)
+            c1 = QColor(C["coral"].red(), C["coral"].green(), C["coral"].blue(), 0)
+            c2 = QColor(C["coral"].red(), C["coral"].green(), C["coral"].blue(), a)
+            c3 = QColor(C["coral_light"].red(), C["coral_light"].green(), C["coral_light"].blue(), a)
             if e == "left":
                 g = QLinearGradient(1, 20, 1, h - 20)
                 g.setColorAt(0, c1); g.setColorAt(0.3, c2); g.setColorAt(0.7, c3); g.setColorAt(1, c1)
@@ -1608,8 +1646,8 @@ class ClaudeNotch(QWidget):
         if glow_alpha > 3:
             cx, cy = w / 2, h / 2
             grad = QConicalGradient(cx, cy, (self._pulse * 20) % 360)
-            gc1 = QColor(217, 119, 87, glow_alpha)
-            gc2 = QColor(235, 155, 120, glow_alpha)
+            gc1 = QColor(C["coral"].red(), C["coral"].green(), C["coral"].blue(), glow_alpha)
+            gc2 = QColor(C["coral_light"].red(), C["coral_light"].green(), C["coral_light"].blue(), glow_alpha)
             grad.setColorAt(0.0, gc1); grad.setColorAt(0.25, gc2)
             grad.setColorAt(0.5, gc1); grad.setColorAt(0.75, gc2)
             grad.setColorAt(1.0, gc1)
@@ -1746,6 +1784,7 @@ class ClaudeNotch(QWidget):
             return
         pr.save()
         pr.setOpacity(min(1, (t - 0.15) / 0.4))
+        pr.setClipRect(QRectF(0, 0, w, h))
         top, L, R = self.HH + 10, 20, w - 20
         cw = R - L
         self._session_click_rects = []
@@ -1837,7 +1876,7 @@ class ClaudeNotch(QWidget):
                 pr.setBrush(QBrush(QColor(217, 119, 87, 25)))
                 pr.setPen(Qt.PenStyle.NoPen)
                 pr.drawRoundedRect(QRectF(L - 4, top - 2, cw + 8, rh + 4), 6, 6)
-            dc = s.tint if s.state == "working" else STATUS_COLORS.get(s.state, C["text_lo"])
+            dc = s.tint if s.state == "working" else _status_colors().get(s.state, C["text_lo"])
             pr.setBrush(QBrush(dc))
             pr.setPen(Qt.PenStyle.NoPen)
             pr.drawEllipse(QRectF(L + 1, top + rh / 2 - 4, 8, 8))
@@ -2009,11 +2048,13 @@ class ClaudeNotch(QWidget):
             tok_detail = f"{tok_str} tokens today"
             # Show breakdown: input/output/cache
             inp = real_tokens.get("input", 0); out = real_tokens.get("output", 0)
-            cr = real_tokens.get("cache_read", 0); real_tokens.get("cache_write", 0)
+            cr = real_tokens.get("cache_read", 0)
+            cw = real_tokens.get("cache_write", 0)
             parts = []
             if inp: parts.append(f"in:{inp//1000}k")
             if out: parts.append(f"out:{out//1000}k")
-            if cr: parts.append(f"cache:{cr//1000}k")
+            if cr: parts.append(f"cache_r:{cr//1000}k")
+            if cw: parts.append(f"cache_w:{cw//1000}k")
             detail_str = "  ·  ".join(parts) if parts else ""
             pr.setPen(QPen(C["coral"])); pr.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
             pr.drawText(L, top, cw, 14, Qt.AlignmentFlag.AlignLeft, tok_detail)
