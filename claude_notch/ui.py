@@ -147,7 +147,7 @@ class SettingsDialog(QDialog):
     def __init__(self, config, parent=None):
         super().__init__(parent)
         self.config = config
-        self.setWindowTitle("Claude Notch \u2014 Settings")
+        self.setWindowTitle("ClawdNotch \u2014 Settings")
         self.setMinimumSize(500, 520)
         self.setStyleSheet(
             "QDialog{background:#121216;color:#f0ece8;}QLabel{color:#9b948e;font-size:12px;}"
@@ -1719,7 +1719,7 @@ class ClaudeNotch(QWidget):
         # -- TITLE BAR with session pill + refresh button --
         pr.setPen(QPen(C["text_hi"]))
         pr.setFont(QFont("Segoe UI", 14, QFont.Weight.DemiBold))
-        pr.drawText(L + 28, top, cw - 28, 26, Qt.AlignmentFlag.AlignLeft, "Claude Notch")
+        pr.drawText(L + 28, top, cw - 28, 26, Qt.AlignmentFlag.AlignLeft, "ClawdNotch")
         ac = self.sessions.get_active_sessions()
 
         # DND button
@@ -2361,17 +2361,12 @@ def make_tray(app, notch, config, sm=None, do_snapshot=None):
     dnd_action.triggered.connect(_toggle_dnd)
 
     def _export():
-        fmt = config.get("export_format", "markdown")
-        path = export_usage_report(notch.tracker, config, fmt)
-        if HAS_TOAST:
-            threading.Thread(
-                target=lambda: toast_notify.notify(
-                    title="Claude Notch",
-                    message=f"Report: {Path(path).name}",
-                    app_name="Claude Notch", timeout=5,
-                ),
-                daemon=True,
-            ).start()
+        try:
+            fmt = config.get("export_format", "markdown")
+            path = export_usage_report(notch.tracker, config, fmt)
+            show_clawd_toast("Export Complete", f"Saved: {Path(path).name}", 5, 0, "completion")
+        except Exception as e:
+            show_clawd_toast("Export Failed", str(e)[:60], 5, 0, "attention")
 
     menu.addAction("Export Usage Report").triggered.connect(_export)
 
@@ -2409,65 +2404,10 @@ def make_tray(app, notch, config, sm=None, do_snapshot=None):
 
     menu.addAction("Reset Position").triggered.connect(_r)
 
-    snap_menu = QMenu("Git Snapshots", menu)
-    snap_menu.setStyleSheet(menu.styleSheet())
-
-    def _refresh_snaps():
-        snap_menu.clear()
-        info = snap_menu.addAction("Save/restore code checkpoints via git refs")
-        info.setEnabled(False)
-        snap_menu.addSeparator()
-        active = sm.get_active_sessions() if sm else []
-        if not active:
-            a = snap_menu.addAction("No active sessions detected")
-            a.setEnabled(False)
-            return
-        pdir = active[0].project_dir
-        if not pdir:
-            a = snap_menu.addAction("Active session has no project directory")
-            a.setEnabled(False)
-            return
-        if not GitCheckpoints.is_git_repo(pdir):
-            a = snap_menu.addAction(f"Not a git repo: {Path(pdir).name}")
-            a.setEnabled(False)
-            return
-        snap_menu.addAction(
-            f"Create Snapshot \u2014 {Path(pdir).name} (Ctrl+Shift+S)"
-        ).triggered.connect(lambda: do_snapshot() if do_snapshot else None)
-        snap_menu.addSeparator()
-        snaps = GitCheckpoints.list_snapshots(pdir)
-        if not snaps:
-            a = snap_menu.addAction("No snapshots yet")
-            a.setEnabled(False)
-        else:
-            for s_item in snaps[:8]:
-                a = snap_menu.addAction(f"{s_item['date']}  {s_item['hash']}")
-                commit = s_item["hash"]
-                d = pdir
-                a.triggered.connect(
-                    lambda checked, c=commit, p_dir=d: _restore_snap(c, p_dir)
-                )
-        snap_menu.addSeparator()
-        snap_menu.addAction("Clear All Snapshots").triggered.connect(
-            lambda: GitCheckpoints.clear(pdir) if pdir else None
-        )
-
-    def _restore_snap(commit, pdir):
-        from PyQt6.QtWidgets import QMessageBox
-        r = QMessageBox.question(
-            None, "Restore Snapshot",
-            f"Restore snapshot {commit}?\nThis overwrites working directory files.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if r == QMessageBox.StandardButton.Yes:
-            GitCheckpoints.restore(pdir, commit)
-
-    snap_menu.aboutToShow.connect(_refresh_snaps)
-    menu.addMenu(snap_menu)
     menu.addSeparator()
     menu.addAction("Quit").triggered.connect(app.quit)
     tray.setContextMenu(menu)
-    tray.setToolTip("Claude Notch \u2014 @ReelDad")
+    tray.setToolTip("ClawdNotch \u2014 @ReelDad")
     tray.activated.connect(
         lambda reason: notch.force_show()
         if reason == QSystemTrayIcon.ActivationReason.Trigger else None
