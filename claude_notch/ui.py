@@ -1556,9 +1556,23 @@ class ClaudeNotch(QWidget):
         ))
         pr.setPen(QPen(C["red"] if dnd_on else C["coral"], 1.0))
         pr.drawRoundedRect(self._dnd_btn_rect, 6, 6)
-        pr.setFont(QFont("Segoe UI", 9))
-        pr.drawText(int(dnd_x), int(dnd_y), int(dnd_sz), int(dnd_sz),
-                    Qt.AlignmentFlag.AlignCenter, "M" if dnd_on else "N")
+        # Draw bell icon: simple lines for recognizable shape
+        pr.setPen(QPen(C["red"] if dnd_on else C["coral"], 1.5))
+        bcx = dnd_x + dnd_sz / 2; bcy = dnd_y + dnd_sz / 2
+        # Bell body (arc)
+        pr.drawArc(QRectF(bcx - 5, bcy - 6, 10, 10), 0, 180 * 16)
+        # Bell sides
+        pr.drawLine(int(bcx - 5), int(bcy - 1), int(bcx - 5), int(bcy + 3))
+        pr.drawLine(int(bcx + 5), int(bcy - 1), int(bcx + 5), int(bcy + 3))
+        # Bell bottom rim
+        pr.drawLine(int(bcx - 6), int(bcy + 3), int(bcx + 6), int(bcy + 3))
+        # Clapper dot
+        pr.setBrush(QBrush(C["red"] if dnd_on else C["coral"]))
+        pr.drawEllipse(QRectF(bcx - 1.5, bcy + 4, 3, 3))
+        # Strike-through line when muted
+        if dnd_on:
+            pr.setPen(QPen(C["red"], 2.0))
+            pr.drawLine(int(bcx - 7), int(bcy + 6), int(bcx + 7), int(bcy - 8))
 
         # Refresh button
         refresh_sz = 22
