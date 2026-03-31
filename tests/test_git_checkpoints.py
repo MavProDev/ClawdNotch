@@ -4,7 +4,6 @@ import os
 import subprocess
 import tempfile
 
-import pytest
 
 from claude_notch.git_checkpoints import GitCheckpoints
 

@@ -2,7 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from claude_notch.notifications import NotificationHistory, NotificationManager
 

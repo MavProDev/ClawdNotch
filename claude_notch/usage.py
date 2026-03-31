@@ -11,7 +11,6 @@ import os
 import sys
 import threading
 import time
-import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -464,7 +463,6 @@ def export_usage_report(tracker, config, fmt="markdown"):
     """
     td = tracker.today
     mo = tracker.month_stats
-    wk = tracker.week_stats
     ts = datetime.now().strftime("%Y-%m-%d_%H%M")
     if fmt == "csv":
         lines = ["Date,ToolCalls,Prompts,Tokens,Sessions,Cost"]
@@ -499,3 +497,145 @@ def export_usage_report(tracker, config, fmt="markdown"):
     out = desktop / f"claude-notch-report-{ts}.{ext}"
     out.write_text(content, encoding="utf-8")
     return str(out)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# REAL TOKEN AGGREGATOR — reads actual usage from Claude Code session JSONL files
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TokenAggregator:
+    """Reads actual token usage from Claude Code's session JSONL files.
+
+    Claude Code stores every API response with real token counts at:
+        ~/.claude/projects/{project-hash}/{session-id}.jsonl
+
+    Each assistant message line contains a "usage" object with:
+        input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens
+
+    This class scans those files and aggregates by date, giving REAL token counts
+    instead of the rough estimates from TOKEN_ESTIMATES.
+
+    Uses the local user's own ~/.claude/ directory — works for any user on any machine.
+    """
+
+    CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+
+    def __init__(self, cache_ttl_seconds=30):
+        self._lock = threading.Lock()
+        self._cache = {}       # {"2026-03-30": {"input": N, "output": N, "cache_read": N, "cache_write": N, "total": N}}
+        self._last_scan = 0.0
+        self._ttl = cache_ttl_seconds
+
+    def get_today(self) -> dict:
+        """Get real token usage for today. Returns cached result if fresh."""
+        self._maybe_refresh()
+        today_key = datetime.now().strftime("%Y-%m-%d")
+        with self._lock:
+            return dict(self._cache.get(today_key, {
+                "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0
+            }))
+
+    def get_date(self, date_str: str) -> dict:
+        """Get real token usage for a specific date (YYYY-MM-DD)."""
+        self._maybe_refresh()
+        with self._lock:
+            return dict(self._cache.get(date_str, {
+                "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0
+            }))
+
+    def get_month_total(self) -> int:
+        """Get total tokens for the current calendar month."""
+        self._maybe_refresh()
+        prefix = datetime.now().strftime("%Y-%m")
+        with self._lock:
+            return sum(v["total"] for k, v in self._cache.items() if k.startswith(prefix))
+
+    def _maybe_refresh(self):
+        """Refresh cache if stale."""
+        now = time.time()
+        if now - self._last_scan < self._ttl:
+            return
+        self._scan()
+        self._last_scan = now
+
+    def _scan(self):
+        """Scan all Claude Code session JSONL files for token usage."""
+        if not self.CLAUDE_PROJECTS_DIR.exists():
+            return
+
+        datetime.now().strftime("%Y-%m-%d")
+        # Only scan files modified in the last 24 hours for today's stats,
+        # and within the last 31 days for monthly totals
+        cutoff_ts = time.time() - (31 * 86400)
+        new_cache = {}
+
+        try:
+            for project_dir in self.CLAUDE_PROJECTS_DIR.iterdir():
+                if not project_dir.is_dir():
+                    continue
+                for jsonl_file in project_dir.glob("*.jsonl"):
+                    try:
+                        # Skip files not modified recently
+                        mtime = jsonl_file.stat().st_mtime
+                        if mtime < cutoff_ts:
+                            continue
+                        self._parse_jsonl(jsonl_file, new_cache)
+                    except Exception:
+                        continue  # skip corrupted/locked files
+        except Exception:
+            return  # permissions error on .claude dir, etc.
+
+        with self._lock:
+            self._cache = new_cache
+
+    def _parse_jsonl(self, path: Path, accumulator: dict):
+        """Parse a single JSONL file and add token counts to the accumulator."""
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or '"usage"' not in line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    # Extract usage from assistant messages
+                    usage = None
+                    msg = data.get("message", {})
+                    if isinstance(msg, dict):
+                        usage = msg.get("usage")
+                    if not usage or not isinstance(usage, dict):
+                        continue
+
+                    # Determine the date from timestamp
+                    ts = data.get("timestamp", "")
+                    if not ts:
+                        continue
+                    try:
+                        # Timestamps are ISO format: "2026-03-30T06:11:13.397Z"
+                        date_key = ts[:10]  # "2026-03-30"
+                        # Validate it looks like a date
+                        if len(date_key) != 10 or date_key[4] != '-':
+                            continue
+                    except (IndexError, TypeError):
+                        continue
+
+                    # Aggregate token counts
+                    if date_key not in accumulator:
+                        accumulator[date_key] = {
+                            "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0
+                        }
+                    day = accumulator[date_key]
+                    inp = usage.get("input_tokens", 0) or 0
+                    out = usage.get("output_tokens", 0) or 0
+                    cache_read = usage.get("cache_read_input_tokens", 0) or 0
+                    cache_write = usage.get("cache_creation_input_tokens", 0) or 0
+                    day["input"] += inp
+                    day["output"] += out
+                    day["cache_read"] += cache_read
+                    day["cache_write"] += cache_write
+                    day["total"] += inp + out + cache_read + cache_write
+        except (OSError, PermissionError):
+            pass  # file locked by Claude Code, skip

@@ -1,7 +1,6 @@
 """Tests for claude_notch.sessions — Session dataclass and SessionManager."""
 
-import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest

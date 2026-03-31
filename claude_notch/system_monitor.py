@@ -18,10 +18,7 @@ import ctypes.wintypes
 import subprocess
 import os
 import sys
-import socket
-import threading
 import time
-import math
 
 from claude_notch.config import CONFIG_DIR, LOCK_FILE
 
@@ -36,13 +33,13 @@ except ImportError:
     HAS_WINREG = False
 
 try:
-    import winsound
+    import winsound  # noqa: F401
     HAS_SOUND = True
 except ImportError:
     HAS_SOUND = False
 
 try:
-    import keyboard as kb_module
+    import keyboard as kb_module  # noqa: F401
     HAS_KEYBOARD = True
 except ImportError:
     HAS_KEYBOARD = False

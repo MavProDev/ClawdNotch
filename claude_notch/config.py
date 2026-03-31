@@ -11,8 +11,7 @@ import json
 import tempfile
 import threading
 from pathlib import Path
-from datetime import datetime, timedelta
-from dataclasses import dataclass
+from datetime import datetime
 
 from PyQt6.QtGui import QColor
 

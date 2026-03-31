@@ -11,8 +11,6 @@ import sys
 import json
 import threading
 import random
-import os
-import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -26,7 +24,6 @@ from claude_notch.config import (
     SESSION_TINTS,
     THINKING_WORDS,
     _atomic_write,
-    C,
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -1,11 +1,8 @@
 """Tests for claude_notch.config — defaults, themes, atomic writes, ConfigManager."""
 
 import json
-import os
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-import pytest
 
 from claude_notch.config import (
     DEFAULT_CONFIG,
@@ -41,7 +38,7 @@ def test_themes_count():
 def test_apply_theme_changes_C():
     """apply_theme('blue') should change C['coral'] to the blue accent."""
     from PyQt6.QtGui import QColor
-    original = C["coral"].getRgb()
+    C["coral"].getRgb()
     apply_theme("blue")
     blue_accent = QColor(*THEMES["blue"]["accent"])
     assert C["coral"].getRgb() == blue_accent.getRgb()

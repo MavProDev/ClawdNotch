@@ -1,9 +1,7 @@
 """Smoke test — verify the main ClaudeNotch widget can be instantiated."""
 
 from unittest.mock import MagicMock, patch
-from datetime import datetime
 
-import pytest
 
 
 def test_app_creates_without_crash(qapp):

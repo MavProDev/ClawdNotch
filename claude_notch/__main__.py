@@ -8,7 +8,7 @@ from claude_notch import __version__
 from claude_notch.config import ConfigManager, apply_theme, HOOK_SERVER_PORT
 from claude_notch.sessions import SessionManager, EmotionEngine
 from claude_notch.hooks import HookServer
-from claude_notch.usage import UsageTracker, UsagePoller, SparklineTracker, StreakTracker, TodoManager
+from claude_notch.usage import UsageTracker, UsagePoller, SparklineTracker, StreakTracker, TodoManager, TokenAggregator
 from claude_notch.notifications import NotificationManager, NotificationHistory
 from claude_notch.system_monitor import acquire_lock, release_lock
 from claude_notch.git_checkpoints import GitCheckpoints
@@ -57,7 +57,8 @@ def main():
     hs.event_received.connect(sm.handle_event)
     hs.start()
 
-    notch = ClaudeNotch(sm, config, tracker, emotion, todos, sparkline, notif_history, streaks)
+    token_agg = TokenAggregator(cache_ttl_seconds=30)
+    notch = ClaudeNotch(sm, config, tracker, emotion, todos, sparkline, notif_history, streaks, token_agg)
 
     # Splash screen — shows on every launch, skippable
     first_launch = not SettingsDialog._check()
@@ -95,7 +96,7 @@ def main():
     proc_timer.timeout.connect(sm.scan_processes)
     proc_timer.start()
 
-    tray = make_tray(app, notch, config, sm, do_snapshot)
+    make_tray(app, notch, config, sm, do_snapshot)
 
     if HAS_KEYBOARD:
         try:
