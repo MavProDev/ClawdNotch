@@ -1787,12 +1787,9 @@ class ClaudeNotch(QWidget):
             cx = 14
             cy = (self.HH - 10 * ps) / 2 + 1
         b = self._bounce
-        tint = None
-        if self.sessions.any_waiting:
-            tint = C["coral"]
-        elif self.sessions.any_working:
-            q = 0.5 + 0.5 * math.sin(self._pulse * 2)
-            tint = QColor(int(217 + 23 * q), int(119 + 66 * q), int(87 - 32 * q))
+        # Always pulse the warm coral glow
+        q = 0.5 + 0.5 * math.sin(self._pulse * 2)
+        tint = QColor(int(217 + 23 * q), int(119 + 66 * q), int(87 - 32 * q))
         active = self.sessions.get_active_sessions()
         emotion = active[0].emotion if active else "neutral"
         draw_clawd(
@@ -1917,9 +1914,11 @@ class ClaudeNotch(QWidget):
         cw = R - L
         self._session_click_rects = []
 
-        # -- CLAWD ICON (small, top-left) --
+        # -- CLAWD ICON (small, top-left) — always pulsing coral glow
+        _q = 0.5 + 0.5 * math.sin(self._pulse * 2)
+        _exp_tint = QColor(int(217 + 23 * _q), int(119 + 66 * _q), int(87 - 32 * _q))
         draw_clawd(
-            pr, L, top + 2, 2.0, self._bounce, None, 0, 0, "neutral",
+            pr, L, top + 2, 2.0, self._bounce, _exp_tint, 0, 0, "neutral",
             eye_glow=True, glow_phase=self._pulse,
         )
 
