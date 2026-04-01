@@ -15,6 +15,7 @@ Provides:
 
 import ctypes
 import ctypes.wintypes
+import re
 import subprocess
 import os
 import sys
@@ -318,7 +319,6 @@ def _extract_project_from_cmdline(cmdline: str) -> str:
     # Claude Code often has the project dir as the cwd or a --project arg
     # Command lines look like: "node .../@anthropic-ai/claude-code/... --project C:\path"
     # or just: "node .../claude-code/cli.js" with cwd being the project
-    import re
     m = re.search(r'--project\s+"?([^"]+)"?', cmdline)
     if m:
         return m.group(1).strip()

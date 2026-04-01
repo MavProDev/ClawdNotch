@@ -8,7 +8,9 @@ from claude_notch import __version__
 from claude_notch.config import ConfigManager, apply_theme, HOOK_SERVER_PORT
 from claude_notch.sessions import SessionManager, EmotionEngine
 from claude_notch.hooks import HookServer
-from claude_notch.usage import UsageTracker, UsagePoller, SparklineTracker, StreakTracker, TodoManager, TokenAggregator, check_for_updates
+from claude_notch.usage import UsageTracker, UsagePoller, SparklineTracker, StreakTracker, TodoManager
+from claude_notch.token_aggregator import TokenAggregator
+from claude_notch.update_checker import check_for_updates
 from claude_notch.notifications import NotificationManager, NotificationHistory
 from claude_notch.system_monitor import acquire_lock, release_lock
 from claude_notch.git_checkpoints import GitCheckpoints

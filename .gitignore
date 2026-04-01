@@ -6,7 +6,7 @@ __pycache__/
 dist/
 build/
 *.egg
-*.spec
+# Note: ClawdNotch.spec is intentionally tracked (PyInstaller config)
 
 # Virtual environments
 venv/

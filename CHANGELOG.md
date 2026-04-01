@@ -1,5 +1,55 @@
 # Changelog
 
+## [4.0.0] - 2026-04-01
+
+### Architecture Overhaul — ui.py split, session dedup, context bar fix, 3 new modules
+
+#### Critical Bug Fixes
+- **Ghost/duplicate session detection** — Process scanning created "unknown" ghost sessions that duplicated hook-detected sessions. Now merges process PIDs into existing hook sessions by project directory matching instead of creating duplicates. Sessions without project info are hidden from the display.
+- **Context bar overflow** — Context bar showed lifetime tokens (e.g. "3019k / 200k") which was meaningless. Now shows "X.XM total" when tokens exceed the context limit, and "Xk / 200k" only when within a single context window.
+- **"unknown" session names** — Process-detected sessions with no project now show "PID XXXX" instead of "unknown". Non-displayable ghost sessions are filtered from the session list entirely.
+
+#### Architecture
+- **Split `ui.py` (2,694 lines) into `ui/` package** — 6 focused sub-modules:
+  - `ui/clawd.py` — Clawd mascot renderer, color utilities, `_lerp_color` (extracted from nested function)
+  - `ui/toast.py` — ClawdToast branded notification popup
+  - `ui/splash.py` — Terminal-style boot splash screen (now uses configurable port in loading text)
+  - `ui/settings.py` — SettingsDialog + shared `open_settings_dialog()` helper (deduplicated)
+  - `ui/notch.py` — Main ClaudeNotch overlay widget
+  - `ui/tray.py` — System tray icon and menu
+  - `ui/__init__.py` — Re-exports for backward compatibility
+- **Extracted `token_aggregator.py`** — TokenAggregator moved from usage.py to own module. Now skips `proc-XXXX` session IDs (no JSONL files for those).
+- **Extracted `update_checker.py`** — GitHub release checker moved from usage.py to own module.
+- **Added `pyproject.toml`** — Centralizes version, deps, metadata, and tool config.
+- All existing imports continue to work via re-exports.
+
+#### Session Management
+- `SessionManager._projects_match()` — New method for flexible project directory matching (exact path, then basename).
+- `SessionManager._find_matching_hook_session()` — Finds existing hook sessions by PID or project directory.
+- `Session.is_displayable` property — Filters out process-detected noise from the UI.
+- `handle_event()` now merges with existing process-detected sessions instead of creating duplicates.
+- `scan_processes()` now tries to assign PIDs to existing hook sessions before creating new entries.
+- `cleanup_dead()` more aggressively removes process ghosts with no project (2 min timeout).
+- Session state now persists PID and detected_via across restarts.
+
+#### Cleanup
+- Deleted `files.zip` (unreferenced 11KB binary in repo root)
+- Deleted root `__pycache__/` (dead bytecache from old monolith)
+- Fixed `.gitignore` — `*.spec` no longer ignored (ClawdNotch.spec is intentionally tracked)
+- Moved `import re` to module level in `system_monitor.py` (was inside function body)
+- Splash screen loading text now shows actual configured port instead of hardcoded 19748
+
+#### Additional Bug Fixes
+- **Settings dialog crash** — Opening settings from tray after a previous settings dialog was closed caused a segfault. Root cause: `WA_DeleteOnClose` destroys the C++ widget but Python keeps a stale pointer. Fixed by using `finished` signal + explicit `deleteLater()` instead of `WA_DeleteOnClose`.
+- **Mini mode rendering** — 6 code paths used hardcoded `HW`/`HH`/`VW`/`VH` constants instead of the `nw`/`nh` properties that respect mini mode. Clawd, status dot, text overlay, edge detection, eye tracking, and tray reset all painted outside the 28x28 widget bounds. All fixed to use `nw`/`nh`.
+- **Tray settings hidden behind notch** — Settings dialog from tray was invisible behind the always-on-top expanded notch. Now force-collapses the notch before opening settings.
+
+#### Stats
+- **68 tests, all passing** (zero breakage from the split)
+- Source: 5,262 lines → 10 modules + 6 ui sub-modules (16 total)
+- `ui.py` eliminated: 2,694 lines → 6 files averaging 270 lines each
+- `usage.py` trimmed: 747 lines → 517 lines + 2 extracted modules
+
 ## [3.1.0] - 2026-03-31
 
 ### Deep Dive Audit — 9 fixes, 18 new tests, 8 files changed
