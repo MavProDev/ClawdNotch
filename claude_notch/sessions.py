@@ -360,6 +360,19 @@ class SessionManager(QObject):
                         pid=w['pid'], detected_via="process",
                     )
                     self._next_tint += 1
+                    known_pids.add(w['pid'])
+            # Also create sessions from process-detected Claude Code (node.exe)
+            # that had no matching window (e.g. title didn't contain "claude")
+            for p in processes:
+                if p['pid'] not in known_pids:
+                    sid = f"proc-{p['pid']}"
+                    self.sessions[sid] = Session(
+                        session_id=sid, project_dir=p.get('cwd', ''),
+                        state="idle", tint_index=self._next_tint,
+                        pid=p['pid'], detected_via="process",
+                    )
+                    self._next_tint += 1
+                    known_pids.add(p['pid'])
         self.session_updated.emit()
 
     def cleanup_dead(self):

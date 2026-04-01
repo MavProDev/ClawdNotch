@@ -221,6 +221,9 @@ def _find_claude_processes() -> list:
 
     BUG FIX #13: Results are cached for 10 seconds to avoid repeated
     PowerShell spawns that cause CPU spikes.
+
+    Returns list of dicts: {'name': 'claude-code', 'pid': int, 'cwd': str}
+    where cwd is the working directory extracted from the command line (best effort).
     """
     global _cached_claude_processes, _cached_claude_processes_ts
 
@@ -231,18 +234,28 @@ def _find_claude_processes() -> list:
 
     results = []
     try:
+        # Emit PID and CommandLine so we can extract the project directory
         r = subprocess.run(
             ["powershell.exe", "-NoProfile", "-Command",
              "Get-CimInstance Win32_Process -Filter \"name='node.exe'\" | "
              "Where-Object { $_.CommandLine -match 'claude' -and ($_.CommandLine -match 'anthropic' -or $_.CommandLine -match 'claude-code') } | "
-             "ForEach-Object { $_.ProcessId }"],
+             "ForEach-Object { \"$($_.ProcessId)|$($_.CommandLine)\" }"],
             capture_output=True, text=True, timeout=8,
             creationflags=0x08000000,
         )
         for line in r.stdout.strip().split("\n"):
             line = line.strip()
-            if line and line.isdigit():
-                results.append({'name': 'claude-code', 'pid': int(line)})
+            if not line:
+                continue
+            if '|' in line:
+                pid_str, cmdline = line.split('|', 1)
+            else:
+                pid_str, cmdline = line, ""
+            pid_str = pid_str.strip()
+            if pid_str and pid_str.isdigit():
+                # Try to extract project dir from command line args
+                cwd = _extract_project_from_cmdline(cmdline)
+                results.append({'name': 'claude-code', 'pid': int(pid_str), 'cwd': cwd})
     except Exception as e:
         print(f"[ProcessScan] PowerShell process scan failed: {e}", file=sys.stderr)
 
@@ -250,6 +263,22 @@ def _find_claude_processes() -> list:
         _cached_claude_processes = list(results)
         _cached_claude_processes_ts = now
     return results
+
+
+def _extract_project_from_cmdline(cmdline: str) -> str:
+    """Best-effort extraction of project directory from Claude Code command line."""
+    # Claude Code often has the project dir as the cwd or a --project arg
+    # Command lines look like: "node .../@anthropic-ai/claude-code/... --project C:\path"
+    # or just: "node .../claude-code/cli.js" with cwd being the project
+    import re
+    m = re.search(r'--project\s+"?([^"]+)"?', cmdline)
+    if m:
+        return m.group(1).strip()
+    # Try to find a path-like argument after the main script
+    m = re.search(r'--cwd\s+"?([^"]+)"?', cmdline)
+    if m:
+        return m.group(1).strip()
+    return ""
 
 
 def _focus_window_by_pid(pid):
