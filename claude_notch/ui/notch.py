@@ -1,995 +1,32 @@
 """
-claude_notch.ui — Visual / UI layer
-=====================================
-Everything the user sees: the ClaudeNotch overlay widget, the CLAWD pixel
-mascot renderer, SettingsDialog, system-tray builder, and all painting /
-animation / mouse-interaction code.
+claude_notch.ui.notch — Main overlay widget
+=============================================
+The ClaudeNotch widget: collapsed notch bar, expanded panel with sessions,
+usage stats, sparklines, streaks, notifications, and recent activity.
 
-Extracted from claude_notch_v2_backup.py with inline bug fixes:
-  BUG #7  — 1 px dark text shadow in _bar()
-  BUG #12 — dynamic width truncation in _pcol() via QFontMetrics
-  BUG #14 — bare except → except Exception in SettingsDialog._check()
+v4.0.0: Fixed context bar display, deduplicated _open_settings,
+removed nested _lerp_color (now imported from clawd).
 """
 
-import json
 import math
-import time
 import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtWidgets import (
-    QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout,
-    QSystemTrayIcon, QMenu, QLineEdit, QPushButton, QDialog, QCheckBox,
-    QComboBox, QFileDialog, QScrollArea,
-)
+from PyQt6.QtWidgets import QApplication, QWidget
 from PyQt6.QtCore import Qt, QTimer, QPoint, QRectF, pyqtSignal
 from PyQt6.QtGui import (
     QPainter, QColor, QFont, QPainterPath, QLinearGradient, QConicalGradient,
-    QPen, QBrush, QPixmap, QIcon, QCursor, QFontMetrics,
+    QPen, QBrush, QCursor, QFontMetrics,
 )
 
 from claude_notch import __version__
-from claude_notch.config import (
-    C, THEMES, HOOK_SERVER_PORT, SPINNER_FRAMES, apply_theme, _redact_key,
-    _dpapi_encrypt,
-)
-from claude_notch.hooks import install_hooks
-from claude_notch.usage import (
-    export_usage_report,
-)
-from claude_notch.system_monitor import (
-    SystemMonitor, _focus_window_by_pid, set_auto_start,
-)
-
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CLAWD PIXEL GRID & EMOTION STYLES
-# ═══════════════════════════════════════════════════════════════════════════════
-
-CLAWD = [
-    [0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0],
-    [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
-    [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
-    [0, 1, 2, 2, 1, 1, 1, 2, 2, 1, 0],
-    [0, 1, 2, 2, 1, 1, 1, 2, 2, 1, 0],
-    [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
-    [0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
-    [0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0],
-    [0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0],
-    [0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0],
-]
-
-EMOTION_STYLES = {
-    "neutral": {"bounce_mult": 1.0, "tint": None, "leg_droop": 0, "tremble": False, "eye_droop": 0},
-    "happy":   {"bounce_mult": 1.5, "tint": QColor(235, 155, 120), "leg_droop": 0, "tremble": False, "eye_droop": 0},
-    "sad":     {"bounce_mult": 0.5, "tint": QColor(180, 130, 120), "leg_droop": 1, "tremble": False, "eye_droop": 0.5},
-    "sob":     {"bounce_mult": 0.3, "tint": QColor(200, 100, 90),  "leg_droop": 2, "tremble": True, "eye_droop": 0.5},
-}
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# STATUS COLORS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _with_alpha(color, alpha):
-    """Return a copy of a QColor with the given alpha (0-255)."""
-    return QColor(color.red(), color.green(), color.blue(), alpha)
-
-
-def _status_colors():
-    """Build status colors from current theme. Called at paint time so theme changes apply."""
-    return {
-        "idle": C["text_lo"],
-        "working": C["amber"],
-        "waiting": C["coral"],
-        "completed": C["green"],
-        "error": C["red"],
-    }
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# draw_clawd()
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def draw_clawd(painter, x, y, ps, bounce=0, tint=None, ex=0, ey=0,
-               emotion="neutral", eye_glow=False, glow_phase=0.0):
-    painter.save()
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-    style = EMOTION_STYLES.get(emotion, EMOTION_STYLES["neutral"])
-    body = tint or style["tint"] or C["coral"]
-    eye = QColor(35, 25, 22)
-    # Matrix green eye color when coding is active
-    if eye_glow:
-        glow_intensity = 0.5 + 0.5 * math.sin(glow_phase * 1.8)
-        eye_r = int(0 + 35 * (1 - glow_intensity))
-        eye_g = int(200 + 55 * glow_intensity)
-        eye_b = int(40 + 25 * glow_intensity)
-        eye = QColor(eye_r, eye_g, eye_b)
-    adj_bounce = bounce * style["bounce_mult"]
-    tremble_x = (math.sin(time.time() * 47) * 0.3) if style["tremble"] else 0
-    tremble_y = (math.cos(time.time() * 53) * 0.3) if style["tremble"] else 0
-    for ri, row in enumerate(CLAWD):
-        for ci, cell in enumerate(row):
-            if cell == 0:
-                continue
-            color = body if cell == 1 else eye
-            px = x + ci * ps + tremble_x
-            py = y + math.sin(adj_bounce) * 1.2 + ri * ps + tremble_y
-            if ri >= 7:
-                py += math.sin(adj_bounce * 0.5 + ci * 0.8) * 0.5
-                py += style["leg_droop"]
-            if cell == 2:
-                px += ex
-                py += ey + style["eye_droop"]
-                # Draw green glow halo behind eyes when coding
-                if eye_glow:
-                    glow_a = int(40 + 30 * math.sin(glow_phase * 1.8))
-                    glow_c = QColor(0, 255, 65, glow_a)
-                    gs = ps * 2.2
-                    painter.fillRect(QRectF(px - ps * 0.6, py - ps * 0.6, gs, gs), QBrush(glow_c))
-            painter.fillRect(QRectF(px, py, ps + 0.5, ps + 0.5), QBrush(color))
-    painter.restore()
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SettingsDialog
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class SettingsDialog(QDialog):
-    def __init__(self, config, parent=None):
-        super().__init__(parent)
-        self.config = config
-        self.setWindowTitle("ClawdNotch \u2014 Settings")
-        self.setMinimumSize(500, 520)
-        self.setStyleSheet(
-            "QDialog{background:#121216;color:#f0ece8;}QLabel{color:#9b948e;font-size:12px;}"
-            "QLineEdit{background:#1c1c24;border:1px solid #2c2c34;color:#f0ece8;padding:8px;border-radius:4px;font-size:12px;}"
-            "QCheckBox{color:#f0ece8;font-size:12px;spacing:8px;}QCheckBox::indicator{width:16px;height:16px;}"
-            "QRadioButton{color:#f0ece8;font-size:12px;spacing:8px;}"
-            "QPushButton{background:#d97757;color:white;border:none;padding:10px 20px;border-radius:6px;font-weight:bold;font-size:13px;}"
-            "QPushButton:hover{background:#eb9b78;}"
-            "QScrollArea{border:none;background:transparent;}"
-            "QScrollBar:vertical{background:#1c1c24;width:8px;border-radius:4px;}"
-            "QScrollBar::handle:vertical{background:#3c3c4c;border-radius:4px;min-height:20px;}"
-            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
-        )
-        # Wrap all content in a QScrollArea for 1080p screen support
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        container = QWidget()
-        L = QVBoxLayout(container)
-        L.setSpacing(8)
-        L.setContentsMargins(24, 20, 24, 20)
-
-        # -- API Keys (prominent, first section) --
-        sec_api = QLabel("API Keys — Rate Limit Monitoring")
-        sec_api.setStyleSheet("color:#d97757;font-size:13px;font-weight:bold;")
-        L.addWidget(sec_api)
-        api_note = QLabel(
-            "Add your Anthropic API key(s) to monitor rate limits in real-time. "
-            "Supports multiple keys across projects. Keys never leave your machine."
-        )
-        api_note.setStyleSheet("color:#9b948e;font-size:11px;")
-        api_note.setWordWrap(True)
-        L.addWidget(api_note)
-        self._keys_layout = QVBoxLayout()
-        self._keys_layout.setSpacing(4)
-        self._key_rows = []
-        for entry in config.get("api_keys", []):
-            self._add_key_row(entry.get("label", ""), entry.get("key", ""), entry.get("added", ""))
-        L.addLayout(self._keys_layout)
-        add_row = QHBoxLayout()
-        self._new_label = QLineEdit()
-        self._new_label.setPlaceholderText("Label")
-        self._new_label.setMaximumWidth(100)
-        self._new_key = QLineEdit()
-        self._new_key.setPlaceholderText("sk-ant-api03-...")
-        self._new_key.setEchoMode(QLineEdit.EchoMode.Password)
-        add_btn = QPushButton("Add Key")
-        add_btn.setStyleSheet(
-            "QPushButton{background:#2c2c34;font-size:11px;padding:6px 14px;}"
-            "QPushButton:hover{background:#3c3c4c;}"
-        )
-        add_btn.clicked.connect(self._add_key)
-        add_row.addWidget(self._new_label)
-        add_row.addWidget(self._new_key)
-        add_row.addWidget(add_btn)
-        L.addLayout(add_row)
-        kn = QLabel("Stored locally at ~/.claude-notch/config.json — never uploaded anywhere")
-        kn.setStyleSheet("color:#5a504c;font-size:10px;")
-        L.addWidget(kn)
-        L.addSpacing(8)
-
-        # -- Usage Mode --
-        sec_mode = QLabel("Usage Mode")
-        sec_mode.setStyleSheet("color:#d97757;font-size:13px;font-weight:bold;")
-        L.addWidget(sec_mode)
-        sub_h = QHBoxLayout()
-        from PyQt6.QtWidgets import QRadioButton
-        self.rb_max = QRadioButton("Subscription (Pro/Max/Team)")
-        self.rb_api = QRadioButton("API Tokens (pay-per-use)")
-        cur_mode = config.get("subscription_mode", "max")
-        self.rb_max.setChecked(cur_mode == "max")
-        self.rb_api.setChecked(cur_mode == "api")
-        sub_h.addWidget(self.rb_max)
-        sub_h.addWidget(self.rb_api)
-        sub_h.addStretch()
-        L.addLayout(sub_h)
-        sn = QLabel("Subscription mode hides cost estimates. API mode shows $ per session.")
-        sn.setStyleSheet("color:#5a504c;font-size:10px;")
-        sn.setWordWrap(True)
-        L.addWidget(sn)
-        L.addSpacing(6)
-
-        # -- Appearance --
-        sec = QLabel("Appearance")
-        sec.setStyleSheet("color:#d97757;font-size:13px;font-weight:bold;margin-top:6px;")
-        L.addWidget(sec)
-        th = QHBoxLayout()
-        th.addWidget(QLabel("Color Theme:"))
-        self.theme_combo = QComboBox()
-        for t in THEMES:
-            self.theme_combo.addItem(t.capitalize(), t)
-        idx = self.theme_combo.findData(config.get("color_theme", "coral"))
-        if idx >= 0:
-            self.theme_combo.setCurrentIndex(idx)
-        th.addWidget(self.theme_combo)
-        th.addStretch()
-        L.addLayout(th)
-        self.mini_mode = QCheckBox("Mini mode (tiny 28px dot when collapsed)")
-        self.mini_mode.setChecked(config.get("mini_mode", False))
-        L.addWidget(self.mini_mode)
-        # Dim settings removed — always fully visible
-        L.addSpacing(4)
-
-        # -- Notifications --
-        sec2 = QLabel("Notifications")
-        sec2.setStyleSheet("color:#d97757;font-size:13px;font-weight:bold;margin-top:6px;")
-        L.addWidget(sec2)
-        self.snd = QCheckBox("Play sound on task completion")
-        self.snd.setChecked(config.get("sound_enabled", True))
-        L.addWidget(self.snd)
-        self.tst = QCheckBox("Windows toast notifications")
-        self.tst.setChecked(config.get("toast_enabled", True))
-        L.addWidget(self.tst)
-        self.mute = QCheckBox("Auto-mute when terminal/IDE focused")
-        self.mute.setChecked(config.get("auto_mute_when_focused", True))
-        L.addWidget(self.mute)
-        self.dnd = QCheckBox("Do Not Disturb (mute everything)")
-        self.dnd.setChecked(config.get("dnd_mode", False))
-        L.addWidget(self.dnd)
-        self.notif_hist = QCheckBox("Notification history in panel")
-        self.notif_hist.setChecked(config.get("notification_history_enabled", True))
-        L.addWidget(self.notif_hist)
-        cs_h = QHBoxLayout()
-        cs_h.addWidget(QLabel("Completion sound:"))
-        self.cs_comp = QLineEdit(config.get("custom_sound_completion", ""))
-        self.cs_comp.setPlaceholderText("Default beep")
-        cs_b = QPushButton("...")
-        cs_b.setStyleSheet(
-            "QPushButton{background:#2c2c34;font-size:11px;padding:6px 10px;min-width:30px;}"
-            "QPushButton:hover{background:#3c3c4c;}"
-        )
-        cs_b.clicked.connect(lambda: self._browse_wav(self.cs_comp))
-        cs_h.addWidget(self.cs_comp)
-        cs_h.addWidget(cs_b)
-        L.addLayout(cs_h)
-        ca_h = QHBoxLayout()
-        ca_h.addWidget(QLabel("Attention sound:"))
-        self.cs_attn = QLineEdit(config.get("custom_sound_attention", ""))
-        self.cs_attn.setPlaceholderText("Default beep")
-        ca_b = QPushButton("...")
-        ca_b.setStyleSheet(
-            "QPushButton{background:#2c2c34;font-size:11px;padding:6px 10px;min-width:30px;}"
-            "QPushButton:hover{background:#3c3c4c;}"
-        )
-        ca_b.clicked.connect(lambda: self._browse_wav(self.cs_attn))
-        ca_h.addWidget(self.cs_attn)
-        ca_h.addWidget(ca_b)
-        L.addLayout(ca_h)
-        L.addSpacing(4)
-
-        # -- Features --
-        sec3 = QLabel("Features")
-        sec3.setStyleSheet("color:#d97757;font-size:13px;font-weight:bold;margin-top:6px;")
-        L.addWidget(sec3)
-        self.click_focus = QCheckBox("Click session to focus terminal")
-        self.click_focus.setChecked(config.get("click_to_focus", True))
-        L.addWidget(self.click_focus)
-        self.sparkline = QCheckBox("Sparkline activity graph")
-        self.sparkline.setChecked(config.get("sparkline_enabled", True))
-        L.addWidget(self.sparkline)
-        self.clipboard = QCheckBox("Click to copy project path")
-        self.clipboard.setChecked(config.get("clipboard_on_click", True))
-        L.addWidget(self.clipboard)
-        self.sess_est = QCheckBox("Session time estimates")
-        self.sess_est.setChecked(config.get("session_estimate_enabled", True))
-        L.addWidget(self.sess_est)
-        self.streaks_cb = QCheckBox("Coding streaks & stats")
-        self.streaks_cb.setChecked(config.get("streaks_enabled", True))
-        L.addWidget(self.streaks_cb)
-        self.sys_res = QCheckBox("System resources (CPU/RAM)")
-        self.sys_res.setChecked(config.get("system_resources_enabled", True))
-        L.addWidget(self.sys_res)
-        model_h = QHBoxLayout()
-        model_h.addWidget(QLabel("Default model:"))
-        self.model_combo2 = QComboBox()
-        for mn in ("sonnet", "opus", "haiku", "sonnet-1m", "opus-1m"):
-            self.model_combo2.addItem(mn, mn)
-        midx = self.model_combo2.findData(config.get("default_model", "sonnet"))
-        if midx >= 0:
-            self.model_combo2.setCurrentIndex(midx)
-        model_h.addWidget(self.model_combo2)
-        model_h.addStretch()
-        L.addLayout(model_h)
-        self.multi_mon = QCheckBox("Multi-monitor support")
-        self.multi_mon.setChecked(config.get("multi_monitor", False))
-        L.addWidget(self.multi_mon)
-        L.addSpacing(4)
-
-        # -- Budget --
-        sec4 = QLabel("Budget Alerts (API mode)")
-        sec4.setStyleSheet("color:#d97757;font-size:13px;font-weight:bold;margin-top:6px;")
-        L.addWidget(sec4)
-        bg = QHBoxLayout()
-        bg.addWidget(QLabel("Daily $:"))
-        self.budget_d = QLineEdit(str(config.get("budget_daily", 0.0) or ""))
-        self.budget_d.setMaximumWidth(80)
-        self.budget_d.setPlaceholderText("0=off")
-        bg.addWidget(self.budget_d)
-        bg.addWidget(QLabel("Monthly $:"))
-        self.budget_m = QLineEdit(str(config.get("budget_monthly", 0.0) or ""))
-        self.budget_m.setMaximumWidth(80)
-        self.budget_m.setPlaceholderText("0=off")
-        bg.addWidget(self.budget_m)
-        bg.addStretch()
-        L.addLayout(bg)
-        L.addSpacing(4)
-
-        # -- System --
-        sec5 = QLabel("System")
-        sec5.setStyleSheet("color:#d97757;font-size:13px;font-weight:bold;margin-top:6px;")
-        L.addWidget(sec5)
-        self.auto = QCheckBox("Start with Windows")
-        self.auto.setChecked(config.get("auto_start", False))
-        L.addWidget(self.auto)
-        ef = QHBoxLayout()
-        ef.addWidget(QLabel("Export format:"))
-        self.export_fmt = QComboBox()
-        self.export_fmt.addItem("Markdown", "markdown")
-        self.export_fmt.addItem("CSV", "csv")
-        eidx = self.export_fmt.findData(config.get("export_format", "markdown"))
-        if eidx >= 0:
-            self.export_fmt.setCurrentIndex(eidx)
-        ef.addWidget(self.export_fmt)
-        ef.addStretch()
-        L.addLayout(ef)
-        pl = QLabel(f"Port: {config.get('hook_server_port', HOOK_SERVER_PORT)}  \u00b7  Ctrl+Shift+C/E/S/D")
-        pl.setStyleSheet("color:#5a504c;font-size:10px;")
-        L.addWidget(pl)
-        L.addStretch()
-        # Check for Updates button
-        upd_btn = QPushButton("Check for Updates")
-        upd_btn.setStyleSheet(
-            "QPushButton{background:#2c2c34;font-size:11px;padding:8px 14px;}"
-            "QPushButton:hover{background:#3c3c4c;}"
-        )
-        upd_btn.clicked.connect(self._check_updates)
-        L.addWidget(upd_btn)
-        L.addSpacing(4)
-        br = QHBoxLayout()
-        self._ib = QPushButton()
-        self._style_ib(self._check())
-        self._ib.clicked.connect(self._inst)
-        br.addWidget(self._ib)
-        sb = QPushButton("Save")
-        sb.clicked.connect(self._save)
-        br.addWidget(sb)
-        L.addLayout(br)
-
-        # Finalize scroll area
-        scroll.setWidget(container)
-        outer.addWidget(scroll)
-
-    def _add_key_row(self, label: str, key: str, added: str = ""):
-        """Add a key display row with remove button."""
-        row = QHBoxLayout()
-        lbl = QLabel(f"{label}:  {_redact_key(key)}")
-        lbl.setStyleSheet("color:#f0ece8;font-size:11px;font-family:Consolas;")
-        rm = QPushButton("\u2715")
-        rm.setStyleSheet(
-            "QPushButton{background:#2a1a1a;color:#e64848;font-size:11px;padding:4px 8px;border-radius:4px;}"
-            "QPushButton:hover{background:#3a2020;}"
-        )
-        rm.setFixedWidth(30)
-        idx = len(self._key_rows)
-        rm.clicked.connect(lambda _, i=idx: self._remove_key(i))
-        row.addWidget(lbl)
-        row.addStretch()
-        row.addWidget(rm)
-        self._keys_layout.addLayout(row)
-        self._key_rows.append({
-            "label": label, "key": key,
-            "added": added or datetime.now().strftime("%Y-%m-%d"),
-            "layout": row, "widgets": [lbl, rm],
-        })
-
-    def _add_key(self):
-        active_count = sum(1 for r in self._key_rows if r is not None)
-        if active_count >= 10:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Limit", "Maximum 10 API keys supported.")
-            return
-        label = self._new_label.text().strip() or f"Key {len(self._key_rows) + 1}"
-        key = self._new_key.text().strip()
-        if not key:
-            return
-        if not key.startswith("sk-ant") or len(key) < 20:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Invalid Key",
-                                "API key should start with 'sk-ant' and be at least 20 characters.")
-            return
-        self._add_key_row(label, key)
-        self._new_label.clear()
-        self._new_key.clear()
-
-    def _remove_key(self, idx):
-        if idx < len(self._key_rows):
-            row = self._key_rows[idx]
-            for w in row["widgets"]:
-                w.setParent(None)
-            self._keys_layout.removeItem(row["layout"])
-            self._key_rows[idx] = None  # mark as removed
-
-    _update_toast_signal = pyqtSignal(str, str, int)  # title, message, timeout
-
-    def _init_update_signal(self):
-        """Connect the thread-safe toast signal. Called once after __init__."""
-        self._update_toast_signal.connect(
-            lambda t, m, to: show_clawd_toast(t, m, to, 0, "info")
-        )
-
-    def _check_updates(self):
-        """Manually check for updates from Settings."""
-        import threading
-        from claude_notch.usage import check_for_updates
-        if not hasattr(self, '_update_toast_connected'):
-            self._init_update_signal()
-            self._update_toast_connected = True
-
-        def _callback(version, url):
-            self._update_found = True
-            self._update_toast_signal.emit(
-                f"ClawdNotch {version} available!",
-                "Click to download the latest version.",
-                12,
-            )
-
-        def _run():
-            self._update_found = False
-            self.config.set("last_update_check", "", save_now=False)
-            check_for_updates(self.config, _callback)
-            if not self._update_found:
-                from claude_notch import __version__
-                self._update_toast_signal.emit(
-                    "You're up to date!",
-                    f"ClawdNotch v{__version__} is the latest version.",
-                    5,
-                )
-        threading.Thread(target=_run, daemon=True).start()
-
-    def _browse_wav(self, line_edit):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Sound File", "", "WAV Files (*.wav);;All Files (*)"
-        )
-        if path:
-            line_edit.setText(path)
-
-    def _style_ib(self, ok):
-        if ok:
-            self._ib.setText("\u2713 Hooks Installed")
-            self._ib.setStyleSheet(
-                "QPushButton{background:#1c3a2a;font-size:11px;padding:8px 14px;color:#48c784;}"
-                "QPushButton:hover{background:#2c4a3a;}"
-            )
-        else:
-            self._ib.setText("Install Claude Code Hooks")
-            self._ib.setStyleSheet(
-                "QPushButton{background:#2c2c34;font-size:11px;padding:8px 14px;}"
-                "QPushButton:hover{background:#3c3c4c;}"
-            )
-
-    def _save(self):
-        def _float(s, default=0.0):
-            try:
-                return float(s) if s else default
-            except ValueError:
-                return default
-        sub_mode = "max" if self.rb_max.isChecked() else "api"
-        api_keys = [
-            {"key": _dpapi_encrypt(r["key"]) if not r["key"].startswith("dpapi:") else r["key"],
-             "label": r["label"], "added": r.get("added", "")}
-            for r in self._key_rows if r is not None
-        ]
-        self.config.set_many({
-            "subscription_mode": sub_mode, "api_keys": api_keys,
-            "sound_enabled": self.snd.isChecked(), "toast_enabled": self.tst.isChecked(),
-            "auto_start": self.auto.isChecked(), "auto_mute_when_focused": self.mute.isChecked(),
-            "dnd_mode": self.dnd.isChecked(),
-            "notification_history_enabled": self.notif_hist.isChecked(),
-            "custom_sound_completion": self.cs_comp.text().strip(),
-            "custom_sound_attention": self.cs_attn.text().strip(),
-            "color_theme": self.theme_combo.currentData() or "coral",
-            "mini_mode": self.mini_mode.isChecked(),
-            "default_model": self.model_combo2.currentData() or "sonnet",
-            "click_to_focus": self.click_focus.isChecked(),
-            "sparkline_enabled": self.sparkline.isChecked(),
-            "clipboard_on_click": self.clipboard.isChecked(),
-            "session_estimate_enabled": self.sess_est.isChecked(),
-            "streaks_enabled": self.streaks_cb.isChecked(),
-            "system_resources_enabled": self.sys_res.isChecked(),
-            "multi_monitor": self.multi_mon.isChecked(),
-            "budget_daily": _float(self.budget_d.text()),
-            "budget_monthly": _float(self.budget_m.text()),
-            "export_format": self.export_fmt.currentData() or "markdown",
-        })
-        apply_theme(self.config.get("color_theme", "coral"))
-        set_auto_start(self.auto.isChecked())
-        self.accept()
-
-    def _inst(self):
-        install_hooks(self.config.get("hook_server_port", HOOK_SERVER_PORT))
-        self._style_ib(True)
-        from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.information(self, "Done", "Hooks installed! Restart Claude Code sessions.")
-
-    @staticmethod
-    def _check():
-        """BUG FIX #14: bare except replaced with except Exception."""
-        p = Path.home() / ".claude" / "settings.json"
-        if not p.exists():
-            return False
-        try:
-            with open(p) as f:
-                d = json.load(f)
-            return any(
-                "claude_notch_hook" in str(h)
-                for hs in d.get("hooks", {}).values()
-                for h in hs
-            )
-        except Exception:
-            return False
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ClawdToast — custom branded notification popup
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class ClawdToast(QWidget):
-    """Custom notification popup with animated Clawd, coral border, slide-in animation.
-
-    Replaces the generic Windows toast with a branded notification that matches
-    the ClawdNotch aesthetic. Slides in from the bottom-right corner, auto-dismisses
-    with fade-out. Click to focus the relevant terminal window.
-    """
-
-    _active_toasts = []  # class-level stack so multiple toasts don't overlap
-
-    def __init__(self, title, message, timeout=8, pid=0, ntype="info"):
-        super().__init__()
-        self._title = title
-        self._message = message
-        self._timeout = timeout
-        self._pid = pid
-        self._ntype = ntype  # "completion", "attention", "budget", "info"
-        self._bounce = 0.0
-        self._pulse = 0.0
-        self._opacity = 0.0
-        self._phase = "slide_in"  # slide_in -> visible -> fade_out -> done
-        self._slide_progress = 0.0
-        self._visible_timer_count = 0
-
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.Tool |
-            Qt.WindowType.WindowDoesNotAcceptFocus
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setFixedSize(340, 88)
-
-        # Position: bottom-right corner, stacked above existing toasts
-        screen = QApplication.primaryScreen()
-        if not screen:
-            self.close()
-            self.deleteLater()
-            return
-        scr = screen.geometry()
-        stack_offset = len(ClawdToast._active_toasts) * 96
-        self._target_x = scr.x() + scr.width() - 340 - 16
-        self._target_y = scr.y() + scr.height() - 88 - 16 - stack_offset
-        self._start_y = self._target_y + 40  # start 40px lower for slide-up
-        self.move(self._target_x, self._start_y)
-
-        ClawdToast._active_toasts.append(self)
-
-        # Animation timer
-        self._timer = QTimer(self)
-        self._timer.setInterval(16)  # ~60fps
-        self._timer.timeout.connect(self._tick)
-        self._timer.start()
-
-    def _tick(self):
-        self._bounce += 0.12
-        self._pulse += 0.15
-
-        if self._phase == "slide_in":
-            self._slide_progress = min(1.0, self._slide_progress + 0.06)
-            self._opacity = min(1.0, self._opacity + 0.08)
-            # Ease-out slide
-            t = 1 - (1 - self._slide_progress) ** 3
-            y = int(self._start_y + (self._target_y - self._start_y) * t)
-            self.move(self._target_x, y)
-            self.setWindowOpacity(self._opacity)
-            if self._slide_progress >= 1.0:
-                self._phase = "visible"
-
-        elif self._phase == "visible":
-            self._visible_timer_count += 1
-            # Smoothly slide to target position (handles restack after dismiss)
-            cur_y = self.pos().y()
-            if abs(cur_y - self._target_y) > 1:
-                new_y = cur_y + int((self._target_y - cur_y) * 0.15)
-                self.move(self._target_x, new_y)
-            # Auto-dismiss after timeout (at 60fps)
-            if self._visible_timer_count > self._timeout * 60:
-                self._phase = "fade_out"
-
-        elif self._phase == "fade_out":
-            self._opacity -= 0.04
-            self.setWindowOpacity(max(0, self._opacity))
-            if self._opacity <= 0:
-                self._dismiss()
-                return
-
-        self.update()
-
-    def __del__(self):
-        """Safety net: remove from active list if widget is garbage collected without _dismiss."""
-        if self in ClawdToast._active_toasts:
-            ClawdToast._active_toasts.remove(self)
-
-    def _dismiss(self):
-        self._timer.stop()
-        if self in ClawdToast._active_toasts:
-            ClawdToast._active_toasts.remove(self)
-            # Reposition remaining toasts to close the gap
-            ClawdToast._restack()
-        self.close()
-        self.deleteLater()
-
-    @staticmethod
-    def _restack():
-        """Reposition all active toasts so there are no gaps after a dismiss."""
-        screen = QApplication.primaryScreen()
-        if not screen:
-            return
-        scr = screen.geometry()
-        for i, toast in enumerate(ClawdToast._active_toasts):
-            toast._target_y = scr.y() + scr.height() - 88 - 16 - i * 96
-            toast._target_x = scr.x() + scr.width() - 340 - 16
-
-    def mousePressEvent(self, e):
-        if self._pid:
-            _focus_window_by_pid(self._pid)
-        self._phase = "fade_out"
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-
-        # Background with rounded corners
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(1, 1, w - 2, h - 2), 12, 12)
-        p.setBrush(QBrush(QColor(12, 12, 14, 245)))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawPath(path)
-
-        # Border — color based on notification type
-        border_color = {
-            "completion": C.get("green", QColor(72, 199, 132)),
-            "attention": C.get("coral", QColor(217, 119, 87)),
-            "budget": C.get("amber", QColor(240, 185, 55)),
-        }.get(self._ntype, C.get("coral", QColor(217, 119, 87)))
-
-        # Subtle outer glow
-        glow_alpha = int(30 + 20 * math.sin(self._pulse * 2))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(_with_alpha(border_color, glow_alpha), 3.0))
-        p.drawPath(path)
-        # Crisp inner border
-        p.setPen(QPen(border_color, 1.2))
-        p.drawPath(path)
-
-        # Animated Clawd on the left
-        ps = 2.8
-        cx = 12
-        cy = (h - 10 * ps) / 2
-        is_attention = self._ntype == "attention"
-        draw_clawd(p, cx, cy, ps, self._bounce, border_color if is_attention else None,
-                   0, 0, "happy" if self._ntype == "completion" else "neutral",
-                   eye_glow=is_attention, glow_phase=self._pulse)
-
-        # Text area — right of Clawd
-        tx = 52
-        # Title
-        p.setPen(QPen(border_color))
-        p.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
-        title = self._title
-        if len(title) > 35:
-            title = title[:33] + "..."
-        p.drawText(tx, 12, w - tx - 12, 20, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title)
-
-        # Message
-        p.setPen(QPen(C.get("text_md", QColor(155, 148, 142))))
-        p.setFont(QFont("Segoe UI", 9))
-        msg = self._message
-        if len(msg) > 50:
-            msg = msg[:48] + "..."
-        p.drawText(tx, 32, w - tx - 12, 18, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, msg)
-
-        # Spinner + subtle hint
-        frame_idx = int(self._pulse) % len(SPINNER_FRAMES)
-        spinner = SPINNER_FRAMES[frame_idx]
-        p.setPen(QPen(C.get("text_lo", QColor(85, 80, 76))))
-        p.setFont(QFont("Segoe UI", 8))
-        hint = "Click to focus" if self._pid else "Click to dismiss"
-        p.drawText(tx, 54, w - tx - 12, 16, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                   f"{spinner} {hint}")
-
-        # Type indicator dot — top right
-        p.setBrush(QBrush(border_color))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(QRectF(w - 16, 8, 6, 6))
-
-        p.end()
-
-
-def show_clawd_toast(title, message, timeout=8, pid=0, ntype="info"):
-    """Show a custom ClawdToast notification. Call from any thread via QTimer."""
-    toast = ClawdToast(title, message, timeout, pid, ntype)
-    toast.show()
-    return toast
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SplashScreen — terminal-style boot animation
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class SplashScreen(QWidget):
-    """Terminal-style boot splash. Shows on every launch. Skippable."""
-
-    finished = pyqtSignal()  # emitted when splash should close and notch should show
-
-    # Cached fonts — avoid re-allocating every paint frame
-    _FS24B = QFont("Segoe UI", 24, QFont.Weight.Bold)
-    _FS10 = QFont("Segoe UI", 10)
-    _FS12B = QFont("Segoe UI", 12, QFont.Weight.Bold)
-    _FS9 = QFont("Segoe UI", 9)
-    _FC10 = QFont("Consolas", 10)
-
-    LOADING_LINES = [
-        "Initializing hook server on :19748...",
-        "Loading session state...",
-        "Scanning for Claude processes...",
-        "Applying theme: coral",
-        "ClawdNotch v{version} ready. Let's go.",
-    ]
-
-    def __init__(self, config, first_launch=False):
-        super().__init__()
-        self._config = config
-        self._first_launch = first_launch
-        self._bounce = 0.0
-        self._pulse = 0.0
-        self._visible_lines = []
-        self._line_index = 0
-        self._phase = "loading"  # loading -> done -> fading
-        self._opacity = 1.0
-        self._show_button = False
-
-        # Frameless, translucent, always on top
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.Tool
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(480, 360)
-
-        # Center on screen
-        screen = QApplication.primaryScreen()
-        if screen:
-            scr = screen.geometry()
-        else:
-            from PyQt6.QtCore import QRect
-            scr = QRect(0, 0, 1920, 1080)
-        self.move(scr.x() + (scr.width() - 480) // 2,
-                  scr.y() + (scr.height() - 360) // 2)
-
-        # Animation timer (30fps for Clawd bounce)
-        self._anim_timer = QTimer(self)
-        self._anim_timer.setInterval(33)
-        self._anim_timer.timeout.connect(self._tick)
-        self._anim_timer.start()
-
-        # Line reveal timer
-        delay = 150 if config.get("auto_start") else 250
-        self._line_timer = QTimer(self)
-        self._line_timer.setInterval(delay)
-        self._line_timer.timeout.connect(self._next_line)
-        self._line_timer.start()
-
-        # Format version into loading lines
-        from claude_notch import __version__
-        self._lines = [l.format(version=__version__) for l in self.LOADING_LINES]
-
-    def _tick(self):
-        self._bounce += 0.08
-        self._pulse += 0.1
-        if self._phase == "fading":
-            self._opacity -= 0.02  # ~500ms fade at 33ms tick
-            self.setWindowOpacity(max(0, self._opacity))
-            if self._opacity <= 0:
-                self._anim_timer.stop()
-                self.finished.emit()
-                self.close()
-        self.update()
-
-    def _next_line(self):
-        if self._line_index < len(self._lines):
-            frame = SPINNER_FRAMES[self._line_index % len(SPINNER_FRAMES)]
-            self._visible_lines.append(f"[{frame}] {self._lines[self._line_index]}")
-            self._line_index += 1
-        else:
-            self._line_timer.stop()
-            if self._first_launch:
-                self._show_button = True
-                self._phase = "done"
-            else:
-                # Pause 500ms then start fading
-                QTimer.singleShot(500, self._start_fade)
-
-    def _start_fade(self):
-        self._phase = "fading"
-
-    def _dismiss(self):
-        """Immediately dismiss (skip button or click/escape)."""
-        self._line_timer.stop()
-        self._anim_timer.stop()
-        self.finished.emit()
-        self.close()
-
-    def _install_and_go(self):
-        """First-launch: install hooks then dismiss."""
-        from claude_notch.hooks import install_hooks
-        from claude_notch.config import HOOK_SERVER_PORT
-        install_hooks(self._config.get("hook_server_port", HOOK_SERVER_PORT))
-        self._visible_lines.append("[✶] Hooks installed! Restart Claude Code sessions.")
-        self._show_button = False
-        self.update()
-        QTimer.singleShot(1500, self._dismiss)
-
-    def mousePressEvent(self, e):
-        if self._show_button:
-            # Check if click is on the Install button area
-            btn_x = (480 - 220) // 2
-            btn_y = 290
-            if btn_x <= e.pos().x() <= btn_x + 220 and btn_y <= e.pos().y() <= btn_y + 36:
-                self._install_and_go()
-                return
-            # Check Skip link
-            skip_y = 330
-            if 180 <= e.pos().x() <= 300 and skip_y <= e.pos().y() <= skip_y + 20:
-                self._dismiss()
-                return
-        else:
-            self._dismiss()
-
-    def keyPressEvent(self, e):
-        if e.key() == Qt.Key.Key_Escape:
-            self._dismiss()
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-
-        # Background with rounded corners
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(0, 0, w, h), 16, 16)
-        p.setBrush(QBrush(QColor(12, 12, 14)))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawPath(path)
-
-        # Border glow
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(_with_alpha(C["coral"], 60), 2.0))
-        p.drawPath(path)
-        p.setPen(QPen(C["coral"], 1.0))
-        p.drawPath(path)
-
-        # Animated Clawd (centered, large)
-        ps = 4.0
-        clawd_w = 11 * ps
-        cx = (w - clawd_w) / 2
-        cy = 30
-        draw_clawd(p, cx, cy, ps, self._bounce, None, 0, 0, "neutral",
-                   eye_glow=True, glow_phase=self._pulse)
-
-        # Title
-        p.setPen(QPen(C["coral"]))
-        p.setFont(self._FS24B)
-        p.drawText(0, 85, w, 40, Qt.AlignmentFlag.AlignCenter, "ClawdNotch")
-
-        # Version
-        from claude_notch import __version__
-        p.setPen(QPen(C["text_lo"]))
-        p.setFont(self._FS10)
-        p.drawText(0, 118, w, 20, Qt.AlignmentFlag.AlignCenter, f"v{__version__}")
-
-        # Loading lines (terminal style)
-        p.setFont(self._FC10)
-        y = 150
-        for line in self._visible_lines:
-            # Bracket char in coral, rest in text_md
-            if line.startswith("["):
-                bracket_end = line.index("]") + 1
-                p.setPen(QPen(C["coral"]))
-                p.drawText(40, y, w - 80, 18, Qt.AlignmentFlag.AlignLeft, line[:bracket_end])
-                p.setPen(QPen(C["text_md"]))
-                fm = p.fontMetrics()
-                offset = fm.horizontalAdvance(line[:bracket_end])
-                p.drawText(40 + offset, y, w - 80 - offset, 18, Qt.AlignmentFlag.AlignLeft, line[bracket_end:])
-            else:
-                p.setPen(QPen(C["text_md"]))
-                p.drawText(40, y, w - 80, 18, Qt.AlignmentFlag.AlignLeft, line)
-            y += 22
-
-        # First-launch: Install button + Skip
-        if self._show_button:
-            btn_w, btn_h = 220, 36
-            btn_x = (w - btn_w) // 2
-            btn_y = 290
-            p.setBrush(QBrush(C["coral"]))
-            p.setPen(Qt.PenStyle.NoPen)
-            p.drawRoundedRect(QRectF(btn_x, btn_y, btn_w, btn_h), 8, 8)
-            p.setPen(QPen(QColor(255, 255, 255)))
-            p.setFont(self._FS12B)
-            p.drawText(btn_x, btn_y, btn_w, btn_h, Qt.AlignmentFlag.AlignCenter, "Install Hooks & Start")
-
-            p.setPen(QPen(C["text_lo"]))
-            p.setFont(self._FS9)
-            p.drawText(0, 330, w, 20, Qt.AlignmentFlag.AlignCenter, "Skip")
-
-        # Contact line (always visible)
-        p.setPen(QPen(C["text_lo"]))
-        p.setFont(self._FS9)
-        p.drawText(0, h - 28, w, 18, Qt.AlignmentFlag.AlignCenter,
-                   "@ReelDad  \u00b7  MavProGroup@gmail.com  \u00b7  Bugs? Ideas? Don't hesitate to reach out.")
-
-        p.end()
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ClaudeNotch — main overlay widget
-# ═══════════════════════════════════════════════════════════════════════════════
+from claude_notch.config import C, SPINNER_FRAMES
+from claude_notch.usage import export_usage_report
+from claude_notch.system_monitor import SystemMonitor, _focus_window_by_pid
+from claude_notch.ui.clawd import draw_clawd, _with_alpha, _status_colors, _lerp_color
+from claude_notch.ui.toast import show_clawd_toast
+from claude_notch.ui.settings import open_settings_dialog
 
 class ClaudeNotch(QWidget):
     _update_signal = pyqtSignal(str, str)  # version, url — thread-safe update notification
@@ -1078,7 +115,7 @@ class ClaudeNotch(QWidget):
             self.setFixedSize(self.nw, self.nh)
             self._anchor_pos = QPoint(lx, ly)
         else:
-            ax = (scr.width() - self.HW) // 2
+            ax = (scr.width() - self.nw) // 2
             self.move(ax, 0)
             self._anchor_pos = QPoint(ax, 0)
 
@@ -1207,8 +244,8 @@ class ClaudeNotch(QWidget):
         scr = self._screen_geom()
         p = self.pos()
         old = self._ori
-        cw = self.VW if self._ori == "vertical" else self.HW
-        ch = self.VH if self._ori == "vertical" else self.HH
+        cw = self.nw
+        ch = self.nh
         d_left = p.x()
         d_right = scr.width() - (p.x() + cw)
         d_top = p.y()
@@ -1590,25 +627,13 @@ class ClaudeNotch(QWidget):
 
     def _open_settings(self):
         """Open settings dialog from the expanded panel footer."""
-        if hasattr(self, '_settings_dlg') and self._settings_dlg and self._settings_dlg.isVisible():
-            self._settings_dlg.raise_()
-            self._settings_dlg.activateWindow()
-            return
-        dlg = SettingsDialog(self.config)
-        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
-        scr = QApplication.primaryScreen().geometry()
-        dlg.resize(520, min(700, scr.height() - 100))
-        dlg.move(scr.x() + (scr.width() - dlg.width()) // 2,
-                 scr.y() + (scr.height() - dlg.height()) // 2)
-        dlg.show()
-        self._settings_dlg = dlg
+        open_settings_dialog(self.config, parent_widget=self)
 
     def _eye_shift(self):
         try:
             cur = QCursor.pos()
             cx = self.pos().x() + 14 + 5 * 2.5
-            cy = self.pos().y() + self.HH // 2
+            cy = self.pos().y() + self.nh // 2
             dx, dy = cur.x() - cx, cur.y() - cy
             d = max(1, math.sqrt(dx * dx + dy * dy))
             return dx / d * 1.2, dy / d * 1.0
@@ -1781,12 +806,13 @@ class ClaudeNotch(QWidget):
     def _pc(self, p, t):
         ps = 2.5
         ex, ey = self._eye_shift()
+        col_w, col_h = self.nw, self.nh
         if self._ori == "vertical" and t < 0.3:
-            cx = (self.VW - 11 * ps) / 2
+            cx = (col_w - 11 * ps) / 2
             cy = 6
         else:
-            cx = 14
-            cy = (self.HH - 10 * ps) / 2 + 1
+            cx = min(14, col_w * 0.4)
+            cy = (col_h - 10 * ps) / 2 + 1
         b = self._bounce
         # Always pulse the warm coral glow
         q = 0.5 + 0.5 * math.sin(self._pulse * 2)
@@ -1829,20 +855,34 @@ class ClaudeNotch(QWidget):
     # -- _pcol : paint collapsed overlay --
 
     def _pcol(self, p, w, t):
-        """BUG FIX #12: dynamic width truncation via QFontMetrics instead of hard-coded 34 chars."""
+        """Collapsed overlay — status dot, text, session badge."""
         op = 1 - t * 3
         if op <= 0:
             return
         p.save()
         p.setOpacity(op)
+        col_w, col_h = self.nw, self.nh
         dc = (
             C["amber"] if self.sessions.any_working
             else C["coral"] if self.sessions.any_waiting
             else C["green"] if self.sessions.total_active > 0
             else C["text_lo"]
         )
-        if self._ori == "vertical":
-            dx, dy = self.VW // 2, 38
+        is_mini = self.config.get("mini_mode")
+        if is_mini:
+            # Mini mode: just a pulsing status dot centered in 28x28
+            dx, dy = col_w // 2, col_h // 2
+            if self.sessions.any_working or self.sessions.any_waiting:
+                q = 0.5 + 0.5 * math.sin(self._pulse * 2.5)
+                gr = 3 + q * 2.5
+                p.setBrush(QBrush(_with_alpha(dc, int(40 + q * 40))))
+                p.setPen(Qt.PenStyle.NoPen)
+                p.drawEllipse(QRectF(dx - gr, dy - gr, gr * 2, gr * 2))
+            p.setBrush(QBrush(dc))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QRectF(dx - 3.5, dy - 3.5, 7, 7))
+        elif self._ori == "vertical":
+            dx, dy = col_w // 2, 38
             if self.sessions.any_working or self.sessions.any_waiting:
                 q = 0.5 + 0.5 * math.sin(self._pulse * 2.5)
                 gr = 3.5 + q * 3
@@ -1856,9 +896,9 @@ class ClaudeNotch(QWidget):
             if c > 0:
                 p.setPen(QPen(C["text_md"]))
                 p.setFont(self._F7)
-                p.drawText(0, 48, self.VW, 14, Qt.AlignmentFlag.AlignCenter, str(c))
+                p.drawText(0, 48, col_w, 14, Qt.AlignmentFlag.AlignCenter, str(c))
         else:
-            dx, dy = 48, self.HH // 2
+            dx, dy = 48, col_h // 2
             if self.sessions.any_working or self.sessions.any_waiting:
                 q = 0.5 + 0.5 * math.sin(self._pulse * 2.5)
                 gr = 3.5 + q * 3
@@ -1889,11 +929,11 @@ class ClaudeNotch(QWidget):
                     tx = tx[:-1]
                 tx = tx + "\u2026"
             p.setPen(QPen(C["text_md"]))
-            p.drawText(58, 0, w - 100, self.HH,
+            p.drawText(58, 0, w - 100, col_h,
                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, tx)
             c = self.sessions.total_active
             if c > 0:
-                bx, by = w - 28, self.HH // 2
+                bx, by = w - 28, col_h // 2
                 p.setBrush(QBrush(C["coral"] if c > 1 else C["text_lo"]))
                 p.setPen(Qt.PenStyle.NoPen)
                 p.drawEllipse(QRectF(bx - 8, by - 8, 16, 16))
@@ -2047,13 +1087,6 @@ class ClaudeNotch(QWidget):
             pr.drawRoundedRect(QRectF(L + 16, top, cw - 16, bar_h), 2, 2)
             if ctx_pct > 0:
                 # Smooth color interpolation: green → amber → coral → red
-                def _lerp_color(c1, c2, f):
-                    f = max(0, min(1, f))
-                    return QColor(
-                        int(c1.red() + (c2.red() - c1.red()) * f),
-                        int(c1.green() + (c2.green() - c1.green()) * f),
-                        int(c1.blue() + (c2.blue() - c1.blue()) * f),
-                    )
                 if ctx_pct <= 0.50:
                     bc = _lerp_color(C["green"], C["amber"], ctx_pct / 0.50)
                 elif ctx_pct <= 0.80:
@@ -2067,7 +1100,13 @@ class ClaudeNotch(QWidget):
             pr.setPen(QPen(C["text_lo"]))
             pr.setFont(self._F7)
             prefix = "" if real_total > 0 else "~"
-            ctx_text = f"{prefix}{display_tokens // 1000}k / {s.context_limit // 1000}k"
+            if display_tokens > s.context_limit:
+                if display_tokens > 1_000_000:
+                    ctx_text = f"{prefix}{display_tokens / 1_000_000:.1f}M total"
+                else:
+                    ctx_text = f"{prefix}{display_tokens // 1000}k total"
+            else:
+                ctx_text = f"{prefix}{display_tokens // 1000}k / {s.context_limit // 1000}k"
             txt_h = 12
             pr.drawText(int(L + 16), int(top + bar_h + 1), int(cw - 16), txt_h,
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, ctx_text)
@@ -2607,88 +1646,3 @@ class ClaudeNotch(QWidget):
         p.drawText(int(x), int(y), int(w - 4), int(bh),
                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, txt)
         return y + bh
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# make_tray()
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def make_tray(app, notch, config, sm=None, do_snapshot=None):
-    pix = QPixmap(32, 32)
-    pix.fill(QColor(0, 0, 0, 0))
-    p = QPainter(pix)
-    draw_clawd(p, 3, 2, 2.5, emotion="neutral")
-    p.end()
-    tray = QSystemTrayIcon(QIcon(pix), app)
-    menu = QMenu()
-    menu.setStyleSheet(
-        "QMenu{background:#121216;color:#f0ece8;border:1px solid #2c2c34;padding:4px;font-size:12px;}"
-        "QMenu::item:selected{background:#d97757;}"
-    )
-    menu.addAction("Show / Hide").triggered.connect(
-        lambda: notch.hide() if notch.isVisible() else notch.force_show()
-    )
-    dnd_action = menu.addAction("Do Not Disturb: OFF")
-
-    def _toggle_dnd():
-        cur = config.get("dnd_mode", False)
-        config.set("dnd_mode", not cur)
-        dnd_action.setText(f"Do Not Disturb: {'ON' if not cur else 'OFF'}")
-        notch.update()
-
-    dnd_action.triggered.connect(_toggle_dnd)
-
-    def _export():
-        try:
-            fmt = config.get("export_format", "markdown")
-            path = export_usage_report(notch.tracker, config, fmt)
-            show_clawd_toast("Export Complete", f"Saved: {Path(path).name}", 5, 0, "completion")
-        except Exception as e:
-            show_clawd_toast("Export Failed", str(e)[:60], 5, 0, "attention")
-
-    menu.addAction("Export Usage Report").triggered.connect(_export)
-
-    def _open_settings():
-        if (hasattr(notch, '_settings_dlg')
-                and notch._settings_dlg and notch._settings_dlg.isVisible()):
-            notch._settings_dlg.raise_()
-            notch._settings_dlg.activateWindow()
-            return
-        dlg = SettingsDialog(config)
-        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
-        scr = QApplication.primaryScreen().geometry()
-        dlg.resize(520, min(700, scr.height() - 100))
-        dlg.move(
-            scr.x() + (scr.width() - dlg.width()) // 2,
-            scr.y() + (scr.height() - dlg.height()) // 2,
-        )
-        dlg.show()
-        notch._settings_dlg = dlg
-
-    menu.addAction("Settings...").triggered.connect(_open_settings)
-    if not SettingsDialog._check():
-        menu.addAction("Install Hooks").triggered.connect(
-            lambda: install_hooks(config.get("hook_server_port", HOOK_SERVER_PORT))
-        )
-
-    def _r():
-        s = QApplication.primaryScreen().geometry()
-        notch._edge = "top"
-        notch._ori = "horizontal"
-        notch.setFixedSize(notch.HW, notch.HH)
-        notch.move((s.width() - notch.HW) // 2, 0)
-        notch._save_pos()
-
-    menu.addAction("Reset Position").triggered.connect(_r)
-
-    menu.addSeparator()
-    menu.addAction("Quit").triggered.connect(app.quit)
-    tray.setContextMenu(menu)
-    tray.setToolTip("ClawdNotch \u2014 @ReelDad")
-    tray.activated.connect(
-        lambda reason: notch.force_show()
-        if reason == QSystemTrayIcon.ActivationReason.Trigger else None
-    )
-    tray.show()
-    return tray

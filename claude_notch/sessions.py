@@ -4,7 +4,8 @@ claude_notch.sessions -- Session lifecycle management
 Session dataclass, SessionManager (QObject), EmotionEngine,
 and persistence helpers (_save_sessions_state / _load_sessions_state).
 
-Extracted from claude_notch_v2_backup.py with BUG FIX #4 (monthly budget alert).
+v4.0.0: Fixed ghost/duplicate session detection, PID merging,
+context bar semantics, and aggressive ghost cleanup.
 """
 
 import sys
@@ -55,18 +56,42 @@ class Session:
     pid: int = 0
     detected_via: str = "hook"
     thinking_word: str = ""
+
     @property
-    def project_name(self): return Path(self.project_dir).name if self.project_dir else "unknown"
+    def project_name(self):
+        if self.project_dir:
+            return Path(self.project_dir).name
+        if self.pid:
+            return f"PID {self.pid}"
+        return "unknown"
+
     @property
     def age_str(self):
         m = int((datetime.now() - self.started_at).total_seconds() / 60)
         return "now" if m < 1 else f"{m}m" if m < 60 else f"{m//60}h {m%60}m"
+
     @property
-    def age_minutes(self): return int((datetime.now() - self.started_at).total_seconds() / 60)
+    def age_minutes(self):
+        return int((datetime.now() - self.started_at).total_seconds() / 60)
+
     @property
-    def tint(self): return SESSION_TINTS[self.tint_index % len(SESSION_TINTS)]
+    def tint(self):
+        return SESSION_TINTS[self.tint_index % len(SESSION_TINTS)]
+
     @property
-    def is_stale(self): return (datetime.now() - self.last_activity).total_seconds() > 7200
+    def is_stale(self):
+        return (datetime.now() - self.last_activity).total_seconds() > 7200
+
+    @property
+    def is_displayable(self):
+        """Whether this session should be shown in the UI.
+
+        Process-detected sessions with no project info are background noise
+        used only for PID matching and keep-alive. Don't clutter the display.
+        """
+        if self.detected_via == "process" and not self.project_dir:
+            return False
+        return True
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # EMOTION ENGINE
@@ -183,6 +208,7 @@ class SessionManager(QObject):
     needs_attention = pyqtSignal(str, int)  # project_name, pid
     budget_alert = pyqtSignal(str)
     achievement = pyqtSignal(str)  # achievement message
+
     def __init__(self, usage_tracker, emotion_engine=None, todo_manager=None, sparkline=None, config=None):
         super().__init__()
         self.sessions = {}
@@ -196,7 +222,47 @@ class SessionManager(QObject):
         self._completed_durations = []
         self._active_cache = []
         self._active_cache_ts = 0.0
-        self._achievements_fired = set()  # track which milestones have been shown
+        self._achievements_fired = set()
+
+    # ── Project matching helpers ──
+
+    @staticmethod
+    def _projects_match(dir_a: str, dir_b: str) -> bool:
+        """Check if two project directories refer to the same project.
+
+        Matches by exact path first, then by basename (case-insensitive).
+        Window titles often only contain the folder name, not the full path.
+        """
+        if not dir_a or not dir_b:
+            return False
+        # Normalize paths for comparison
+        a = dir_a.replace("\\", "/").rstrip("/").lower()
+        b = dir_b.replace("\\", "/").rstrip("/").lower()
+        if a == b:
+            return True
+        # Basename match — handles "Claude Notch" matching "C:\...\Claude Notch"
+        name_a = a.rsplit("/", 1)[-1]
+        name_b = b.rsplit("/", 1)[-1]
+        return name_a == name_b and name_a != ""
+
+    def _find_matching_hook_session(self, project_dir: str, pid: int = 0):
+        """Find an existing hook-detected session that matches a process.
+
+        Returns the session_id if found, None otherwise.
+        Checks PID first (if session has one), then project_dir match.
+        """
+        if pid:
+            for sid, s in self.sessions.items():
+                if s.pid == pid:
+                    return sid
+        if project_dir:
+            for sid, s in self.sessions.items():
+                if s.detected_via == "hook" and self._projects_match(s.project_dir, project_dir):
+                    return sid
+        return None
+
+    # ── Event handlers ──
+
     def _on_session_start(self, s, event):
         s.state = "idle"
 
@@ -243,7 +309,6 @@ class SessionManager(QObject):
             prompt_text = event.get("user_prompt", "")
             s.emotion = self._emotion.process(s.session_id, prompt_text)
 
-    # Event type -> handler method
     _EVENT_HANDLERS = {
         "SessionStart": _on_session_start,
         "PreToolUse": _on_pre_tool_use,
@@ -260,24 +325,44 @@ class SessionManager(QObject):
         sid = event.get("session_id", "unknown")
         pd = event.get("project_dir", "")
         self._tracker.record_event(et)
-        if self._sparkline: self._sparkline.record()
+        if self._sparkline:
+            self._sparkline.record()
         with self._lock:
             if sid not in self.sessions:
                 model = (self._config.get("default_model", "sonnet") if self._config else "sonnet")
                 ctx = MODEL_CONTEXT_LIMITS.get(model, 200_000)
-                self.sessions[sid] = Session(session_id=sid, project_dir=pd, tint_index=self._next_tint, model=model, context_limit=ctx)
+                new_session = Session(
+                    session_id=sid, project_dir=pd,
+                    tint_index=self._next_tint, model=model, context_limit=ctx,
+                )
+                # v4.0.0: Merge with existing process-detected ghost session
+                # If a process session was already created for this Claude instance,
+                # steal its PID and remove the ghost instead of having two entries.
+                if pd:
+                    for existing_sid in list(self.sessions):
+                        es = self.sessions[existing_sid]
+                        if es.detected_via == "process" and es.pid:
+                            if self._projects_match(pd, es.project_dir):
+                                new_session.pid = es.pid
+                                del self.sessions[existing_sid]
+                                if self._emotion:
+                                    self._emotion.remove_session(existing_sid)
+                                if self._todos:
+                                    self._todos.remove_session(existing_sid)
+                                break
+                self.sessions[sid] = new_session
                 self._next_tint += 1
             s = self.sessions[sid]
             s.last_activity = datetime.now()
-            if pd: s.project_dir = pd
+            if pd:
+                s.project_dir = pd
             est = TOKEN_ESTIMATES.get(et, 100)
             s.session_tokens += est
             handler = self._EVENT_HANDLERS.get(et)
             if handler:
                 handler(self, s, event)
-        # Budget alert check (once per threshold crossing, not every event)
+        # Budget alert check
         if self._config and self._config.get("subscription_mode") == "api":
-            # --- Daily budget alert ---
             daily_budget = self._config.get("budget_daily", 0)
             if daily_budget > 0:
                 cost = self._tracker.today.get("est_cost", 0)
@@ -285,7 +370,6 @@ class SessionManager(QObject):
                 if cost >= daily_budget * 0.8 and not getattr(self, '_budget_alerted', None) == alert_key:
                     self._budget_alerted = alert_key
                     self.budget_alert.emit(f"Daily budget: ${cost:.2f} / ${daily_budget:.2f}")
-            # --- BUG FIX #4: Monthly budget alert ---
             budget_monthly = self._config.get("budget_monthly", 0)
             if budget_monthly > 0:
                 month = self._tracker.month_stats
@@ -316,43 +400,62 @@ class SessionManager(QObject):
 
     @property
     def avg_session_minutes(self):
-        if not self._completed_durations: return 0
+        if not self._completed_durations:
+            return 0
         return int(sum(self._completed_durations) / len(self._completed_durations))
 
     def scan_processes(self):
-        """Scan for running Claude Code windows/processes and keep sessions alive."""
+        """Scan for running Claude Code windows/processes and keep sessions alive.
+
+        v4.0.0: Merges process-detected PIDs into existing hook sessions
+        instead of creating duplicate "unknown" ghost entries.
+        """
         from claude_notch.system_monitor import _find_claude_windows, _find_claude_processes
         windows = _find_claude_windows()
         processes = _find_claude_processes()
         active_pids = {w['pid'] for w in windows} | {p['pid'] for p in processes}
         with self._lock:
-            # Touch hook-detected sessions whose process is still running
+            # Pass 1: Keep existing sessions alive if their process is still running
             for sid, s in self.sessions.items():
-                # Don't resurrect completed sessions -- they ended intentionally
                 if s.state == "completed":
                     continue
                 if s.pid and s.pid in active_pids:
-                    # Process still alive -- keep session, don't let it go stale
                     if (datetime.now() - s.last_activity).total_seconds() > 30:
                         s.last_activity = datetime.now()
-            # Create sessions for newly found Claude Code terminal windows not yet tracked
+
+            # Pass 2: For PIDs with no session yet, try to merge with existing
+            # hook sessions before creating new process-detected entries
             known_pids = {s.pid for s in self.sessions.values() if s.pid}
+
             for w in windows:
-                if w['pid'] not in known_pids:
-                    # Extract project name from window title
-                    title = w.get('title', '')
-                    pdir = ""
-                    for sep in [' \u2014 ', ' - ', ': ']:
-                        if sep in title:
-                            parts = title.split(sep)
-                            for part in parts:
-                                part = part.strip()
-                                if part.lower() not in ('claude', 'claude code', 'windows terminal',
-                                                         'command prompt', 'powershell', 'cmd'):
-                                    pdir = part
-                                    break
-                            if pdir:
+                if w['pid'] in known_pids:
+                    continue
+                # Extract project name from window title
+                title = w.get('title', '')
+                pdir = self._extract_project_from_title(title)
+
+                # Try to match this PID to an existing hook session with no PID
+                matched = False
+                if pdir:
+                    for sid, s in self.sessions.items():
+                        if s.detected_via == "hook" and not s.pid:
+                            if self._projects_match(pdir, s.project_dir):
+                                s.pid = w['pid']
+                                known_pids.add(w['pid'])
+                                matched = True
                                 break
+                    if not matched:
+                        # Also check hook sessions that have a PID but it died
+                        for sid, s in self.sessions.items():
+                            if s.detected_via == "hook" and s.pid and s.pid not in active_pids:
+                                if self._projects_match(pdir, s.project_dir):
+                                    s.pid = w['pid']
+                                    known_pids.add(w['pid'])
+                                    matched = True
+                                    break
+
+                if not matched:
+                    # Truly new — no hook session for this project yet
                     sid = f"proc-{w['pid']}"
                     self.sessions[sid] = Session(
                         session_id=sid, project_dir=pdir,
@@ -361,29 +464,53 @@ class SessionManager(QObject):
                     )
                     self._next_tint += 1
                     known_pids.add(w['pid'])
-            # Also create sessions from process-detected Claude Code (node.exe)
-            # that had no matching window (e.g. title didn't contain "claude")
+
+            # Also create sessions from process-detected Claude Code that had no window
             for p in processes:
-                if p['pid'] not in known_pids:
+                if p['pid'] in known_pids:
+                    continue
+                pdir = p.get('cwd', '')
+                # Try to merge with existing hook session
+                matched = False
+                if pdir:
+                    for sid, s in self.sessions.items():
+                        if s.detected_via == "hook" and not s.pid:
+                            if self._projects_match(pdir, s.project_dir):
+                                s.pid = p['pid']
+                                known_pids.add(p['pid'])
+                                matched = True
+                                break
+                if not matched:
                     sid = f"proc-{p['pid']}"
                     self.sessions[sid] = Session(
-                        session_id=sid, project_dir=p.get('cwd', ''),
+                        session_id=sid, project_dir=pdir,
                         state="idle", tint_index=self._next_tint,
                         pid=p['pid'], detected_via="process",
                     )
                     self._next_tint += 1
                     known_pids.add(p['pid'])
+
         self.session_updated.emit()
+
+    @staticmethod
+    def _extract_project_from_title(title: str) -> str:
+        """Extract project directory/name from a window title."""
+        if not title:
+            return ""
+        for sep in [' \u2014 ', ' - ', ': ']:
+            if sep in title:
+                parts = title.split(sep)
+                for part in parts:
+                    part = part.strip()
+                    if part.lower() not in ('claude', 'claude code', 'windows terminal',
+                                             'command prompt', 'powershell', 'cmd'):
+                        return part
+        return ""
 
     def cleanup_dead(self):
         """Remove sessions that are no longer active.
 
-        Called on refresh press and automatically every 60s. Rules:
-        - completed sessions: remove immediately
-        - process-detected sessions: remove if PID is gone
-        - hook sessions with no activity for 5+ min: remove (Claude sends events
-          frequently while working; 5 min silence = dead or user closed it)
-        - any session inactive 10+ min without a live process: remove
+        v4.0.0: More aggressive cleanup of process-detected ghosts.
         """
         from claude_notch.system_monitor import _find_claude_windows, _find_claude_processes
         active_pids = set()
@@ -404,12 +531,16 @@ class SessionManager(QObject):
                 if v.state == "completed":
                     to_remove.append(sid)
                     continue
-                # Process-detected sessions: only remove if scan succeeded and PID is gone
+                # Process-detected with no project: remove if PID gone OR after 2 min idle
+                if v.detected_via == "process" and not v.project_dir:
+                    if (scan_ok and not proc_alive) or age > 120:
+                        to_remove.append(sid)
+                        continue
+                # Process-detected with project: remove if PID gone
                 if v.detected_via == "process" and scan_ok and not proc_alive:
                     to_remove.append(sid)
                     continue
                 # Hook sessions with no PID: only trust recent activity
-                # Claude Code sends events constantly while working. 5 min silence = dead.
                 if not v.pid and age > 300:
                     to_remove.append(sid)
                     continue
@@ -439,29 +570,44 @@ class SessionManager(QObject):
             self.session_updated.emit()
 
     def get_active_sessions(self):
+        """Return active, displayable sessions sorted by most recent activity.
+
+        v4.0.0: Filters out non-displayable process ghosts so they don't
+        consume slots in the session list.
+        """
         now = time.monotonic()
         if now - self._active_cache_ts < 0.1:
             return list(self._active_cache)
         with self._lock:
             a = [s for s in self.sessions.values()
                  if s.state != "completed"
-                 and (datetime.now() - s.last_activity).total_seconds() < 7200]
+                 and (datetime.now() - s.last_activity).total_seconds() < 7200
+                 and s.is_displayable]
             a.sort(key=lambda s: s.last_activity, reverse=True)
         self._active_cache = a
         self._active_cache_ts = now
         return a
+
     def get_all_tasks(self, limit=10):
         t = []
         with self._lock:
             for s in self.sessions.values():
-                for tk in s.tasks_completed: t.append({**tk, "project": s.project_name})
-        t.sort(key=lambda x: x.get("time",""), reverse=True); return t[:limit]
+                for tk in s.tasks_completed:
+                    t.append({**tk, "project": s.project_name})
+        t.sort(key=lambda x: x.get("time", ""), reverse=True)
+        return t[:limit]
+
     @property
-    def total_active(self): return len(self.get_active_sessions())
+    def total_active(self):
+        return len(self.get_active_sessions())
+
     @property
-    def any_working(self): return any(s.state=="working" for s in self.get_active_sessions())
+    def any_working(self):
+        return any(s.state == "working" for s in self.get_active_sessions())
+
     @property
-    def any_waiting(self): return any(s.state=="waiting" for s in self.get_active_sessions())
+    def any_waiting(self):
+        return any(s.state == "waiting" for s in self.get_active_sessions())
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PERSISTENCE HELPERS
@@ -472,7 +618,6 @@ def _save_sessions_state(sessions: dict):
     try:
         state = {}
         for sid, s in sessions.items():
-            # Don't persist completed sessions -- they're dead
             if s.state == "completed":
                 continue
             state[sid] = {
@@ -484,6 +629,7 @@ def _save_sessions_state(sessions: dict):
                 "session_tokens": s.session_tokens,
                 "detected_via": s.detected_via,
                 "model": s.model,
+                "pid": s.pid,
             }
         _atomic_write(SESSIONS_FILE, {"saved_at": datetime.now().isoformat(), "sessions": state})
     except Exception as e:
@@ -491,18 +637,13 @@ def _save_sessions_state(sessions: dict):
 
 
 def _load_sessions_state() -> dict:
-    """Load persisted session state from disk.
-
-    Only restores sessions that were recently active. Completed/stale sessions
-    are discarded -- they'll reappear via hooks if still alive.
-    """
+    """Load persisted session state from disk."""
     if not SESSIONS_FILE.exists():
         return {}
     try:
         with open(SESSIONS_FILE) as f:
             data = json.load(f)
         saved_at = datetime.fromisoformat(data.get("saved_at", "2000-01-01"))
-        # Don't restore sessions older than 1 hour
         if (datetime.now() - saved_at).total_seconds() > 3600:
             return {}
         result = {}
@@ -510,7 +651,6 @@ def _load_sessions_state() -> dict:
             saved_state = s.get("state", "idle")
             last_act = datetime.fromisoformat(s.get("last_activity", datetime.now().isoformat()))
             age = (datetime.now() - last_act).total_seconds()
-            # Skip completed sessions and sessions inactive for 10+ minutes
             if saved_state == "completed" or age > 600:
                 continue
             model = s.get("model", "sonnet")
@@ -523,6 +663,8 @@ def _load_sessions_state() -> dict:
                 tint_index=s.get("tint_index", 0), emotion=s.get("emotion", "neutral"),
                 session_tokens=s.get("session_tokens", 0),
                 model=model, context_limit=MODEL_CONTEXT_LIMITS.get(model, 200_000),
+                pid=s.get("pid", 0),
+                detected_via=s.get("detected_via", "hook"),
             )
         return result
     except Exception as e:
