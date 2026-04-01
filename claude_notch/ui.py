@@ -1732,14 +1732,15 @@ class ClaudeNotch(QWidget):
                 g = QLinearGradient(20, 1, w - 20, 1)
                 g.setColorAt(0, c1); g.setColorAt(0.3, c2); g.setColorAt(0.7, c3); g.setColorAt(1, c1)
                 p.setPen(QPen(QBrush(g), 1.5)); p.drawLine(20, 1, w - 20, 1)
-        # Animated glow border
-        glow_alpha = 15
+        # Animated glow border — always alive, brighter when working
         if self.sessions.any_working:
             glow_alpha = int(120 + 60 * math.sin(self._pulse * 2))
         elif self.sessions.any_waiting:
             glow_alpha = int(90 + 50 * math.sin(self._pulse * 2.5))
         elif self.sessions.total_active > 0:
-            glow_alpha = 35
+            glow_alpha = int(50 + 20 * math.sin(self._pulse * 1.5))
+        else:
+            glow_alpha = int(40 + 15 * math.sin(self._pulse * 1.5))
         if t < 0.5:
             glow_alpha = int(glow_alpha * (0.5 + t))
         else:
@@ -1905,10 +1906,9 @@ class ClaudeNotch(QWidget):
     # -- _pexp : paint expanded panel --
 
     def _pexp(self, pr, w, h, t):
-        if t < 0.15:
+        if t < 0.05:
             return
         pr.save()
-        pr.setOpacity(min(1, (t - 0.15) / 0.4))
         pr.setClipRect(QRectF(0, 0, w, h))
         top, L, R = self.HH + 10, 20, w - 20
         cw = R - L
@@ -2073,12 +2073,13 @@ class ClaudeNotch(QWidget):
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, ctx_text)
             top += bar_h + txt_h + 2
         if not ac:
-            # Charming empty state — dimmed Clawd with thought bubble
+            # Empty state — Clawd still alive (glowing, dancing, green eyes)
             empty_cx = L + cw // 2 - 22
             empty_cy = top + 4
-            pr.setOpacity(0.4)
-            draw_clawd(pr, empty_cx, empty_cy, 2.2, self._bounce, None, 0, 0, "neutral")
-            pr.setOpacity(min(1, (t - 0.15) / 0.4))
+            _eq = 0.5 + 0.5 * math.sin(self._pulse * 2)
+            _empty_tint = QColor(int(217 + 23 * _eq), int(119 + 66 * _eq), int(87 - 32 * _eq))
+            draw_clawd(pr, empty_cx, empty_cy, 2.2, self._bounce, _empty_tint, 0, 0, "neutral",
+                       eye_glow=True, glow_phase=self._pulse)
             # Thought bubble dots
             bx = empty_cx + 28
             by = empty_cy + 2
