@@ -149,14 +149,26 @@ def _is_terminal_focused() -> bool:
         return False
 
 
+def _is_claude_desktop_app(exe_path: str) -> bool:
+    """Distinguish Claude desktop app from Claude Code CLI by exe path.
+
+    Desktop app lives in: C:\\Program Files\\WindowsApps\\Claude_*\\app\\Claude.exe
+    CLI lives in:         AppData\\Local\\Microsoft\\WinGet\\...\\claude.exe
+                          or AppData\\Roaming\\npm\\claude.exe, etc.
+    """
+    lower = exe_path.lower()
+    return "windowsapps\\claude_" in lower or "\\app\\claude.exe" in lower
+
+
 def _find_claude_windows() -> list:
     """Find visible terminal windows that are actively running Claude Code CLI.
 
-    Claude Code runs inside terminals (Windows Terminal, cmd, PowerShell, etc.)
-    and typically sets the window title to include the project directory name.
-    We look for terminal processes whose title suggests Claude Code is running.
-    We explicitly EXCLUDE: the Claude desktop app (claude.exe), browser tabs,
-    and our own Claude Notch overlay windows.
+    Claude Code runs either:
+      1. Inside terminals (Windows Terminal, cmd, PowerShell, etc.)
+      2. As its own claude.exe native binary (WinGet/npm install)
+
+    We look for windows whose title suggests Claude Code is running.
+    We EXCLUDE: the Claude desktop app, browser tabs, and our own overlay.
     """
     results = []
     # Known terminal process names (the exe that hosts Claude Code CLI)
@@ -184,22 +196,24 @@ def _find_claude_windows() -> list:
                 # Only match if 'claude' appears in the title
                 if 'claude' not in lower:
                     return True
-                # Get the process name to verify it's a terminal, not the Claude desktop app
+                # Get the process name to verify it's a terminal or CLI, not the desktop app
                 pid = ctypes.c_ulong()
                 ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
                 pid_val = pid.value
-                # Check process name
+                # Check process exe path
                 h_proc = ctypes.windll.kernel32.OpenProcess(0x0410, False, pid_val)  # PROCESS_QUERY_INFORMATION | PROCESS_VM_READ
                 if h_proc:
                     exe_buf = ctypes.create_unicode_buffer(260)
                     size = ctypes.c_ulong(260)
                     if ctypes.windll.kernel32.QueryFullProcessImageNameW(h_proc, 0, exe_buf, ctypes.byref(size)):
-                        exe_name = exe_buf.value.split("\\")[-1].lower()
+                        exe_path = exe_buf.value
+                        exe_name = exe_path.split("\\")[-1].lower()
                         ctypes.windll.kernel32.CloseHandle(h_proc)
-                        # Only accept terminal processes, not claude.exe (desktop app)
-                        if exe_name == "claude.exe":
+                        # Reject the Claude desktop app (Electron)
+                        if exe_name == "claude.exe" and _is_claude_desktop_app(exe_path):
                             return True
-                        if exe_name not in TERMINAL_EXES:
+                        # Accept: terminal processes OR claude.exe CLI
+                        if exe_name not in TERMINAL_EXES and exe_name != "claude.exe":
                             return True
                     else:
                         ctypes.windll.kernel32.CloseHandle(h_proc)
@@ -217,7 +231,14 @@ def _find_claude_windows() -> list:
 
 
 def _find_claude_processes() -> list:
-    """Find running node.js processes that are Claude Code CLI using PowerShell.
+    """Find running Claude Code CLI processes using PowerShell.
+
+    Detects both:
+      1. node.exe running Claude Code (legacy npm installs)
+      2. claude.exe CLI binary (WinGet / native installs)
+
+    Excludes the Claude desktop app (Electron) by filtering out processes
+    whose exe path contains 'WindowsApps\\Claude_'.
 
     BUG FIX #13: Results are cached for 10 seconds to avoid repeated
     PowerShell spawns that cause CPU spikes.
@@ -234,7 +255,7 @@ def _find_claude_processes() -> list:
 
     results = []
     try:
-        # Emit PID and CommandLine so we can extract the project directory
+        # Query 1: node.exe running Claude Code (legacy)
         r = subprocess.run(
             ["powershell.exe", "-NoProfile", "-Command",
              "Get-CimInstance Win32_Process -Filter \"name='node.exe'\" | "
@@ -253,11 +274,38 @@ def _find_claude_processes() -> list:
                 pid_str, cmdline = line, ""
             pid_str = pid_str.strip()
             if pid_str and pid_str.isdigit():
-                # Try to extract project dir from command line args
                 cwd = _extract_project_from_cmdline(cmdline)
                 results.append({'name': 'claude-code', 'pid': int(pid_str), 'cwd': cwd})
     except Exception as e:
-        print(f"[ProcessScan] PowerShell process scan failed: {e}", file=sys.stderr)
+        print(f"[ProcessScan] PowerShell node.exe scan failed: {e}", file=sys.stderr)
+
+    try:
+        # Query 2: claude.exe CLI binary (WinGet / native installs)
+        # Exclude desktop app (WindowsApps) and child processes (--type=renderer etc.)
+        r2 = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"name='claude.exe'\" | "
+             "Where-Object { $_.ExecutablePath -notmatch 'WindowsApps' -and "
+             "$_.CommandLine -notmatch '--type=' } | "
+             "ForEach-Object { \"$($_.ProcessId)|$($_.CommandLine)\" }"],
+            capture_output=True, text=True, timeout=8,
+            creationflags=0x08000000,
+        )
+        seen_pids = {r['pid'] for r in results}
+        for line in r2.stdout.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            if '|' in line:
+                pid_str, cmdline = line.split('|', 1)
+            else:
+                pid_str, cmdline = line, ""
+            pid_str = pid_str.strip()
+            if pid_str and pid_str.isdigit() and int(pid_str) not in seen_pids:
+                cwd = _extract_project_from_cmdline(cmdline)
+                results.append({'name': 'claude-code', 'pid': int(pid_str), 'cwd': cwd})
+    except Exception as e:
+        print(f"[ProcessScan] PowerShell claude.exe scan failed: {e}", file=sys.stderr)
 
     with _process_cache_lock:
         _cached_claude_processes = list(results)

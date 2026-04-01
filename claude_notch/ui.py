@@ -243,18 +243,7 @@ class SettingsDialog(QDialog):
         self.mini_mode = QCheckBox("Mini mode (tiny 28px dot when collapsed)")
         self.mini_mode.setChecked(config.get("mini_mode", False))
         L.addWidget(self.mini_mode)
-        self.dim_inactive = QCheckBox("Dim when no sessions active")
-        self.dim_inactive.setChecked(config.get("dim_when_inactive", True))
-        L.addWidget(self.dim_inactive)
-        dim_h = QHBoxLayout()
-        dim_h.addWidget(QLabel("Dim opacity:"))
-        self.dim_val = QLineEdit(str(config.get("dim_opacity", 0.55)))
-        self.dim_val.setMaximumWidth(60)
-        self.dim_val.setPlaceholderText("0.55")
-        dim_h.addWidget(self.dim_val)
-        dim_h.addWidget(QLabel("(0.3 = very dim, 0.9 = barely dim)"))
-        dim_h.addStretch()
-        L.addLayout(dim_h)
+        # Dim settings removed — always fully visible
         L.addSpacing(4)
 
         # -- Notifications --
@@ -536,8 +525,6 @@ class SettingsDialog(QDialog):
             "custom_sound_attention": self.cs_attn.text().strip(),
             "color_theme": self.theme_combo.currentData() or "coral",
             "mini_mode": self.mini_mode.isChecked(),
-            "dim_when_inactive": self.dim_inactive.isChecked(),
-            "dim_opacity": max(0.3, min(0.9, _float(self.dim_val.text(), 0.55))),
             "default_model": self.model_combo2.currentData() or "sonnet",
             "click_to_focus": self.click_focus.isChecked(),
             "sparkline_enabled": self.sparkline.isChecked(),
@@ -1269,13 +1256,8 @@ class ClaudeNotch(QWidget):
                     period_label = "this week"
         self._cached_period_label = period_label
         self._cached_period_data = td
-        # Update dim target — only dim when collapsed, never when expanded
-        if (self.config.get("dim_when_inactive", True)
-                and self.sessions.total_active == 0
-                and not self._expanded):
-            self._target_opacity = max(0.45, self.config.get("dim_opacity", 0.55))
-        else:
-            self._target_opacity = 1.0
+        # Always fully visible — no dimming
+        self._target_opacity = 1.0
 
     # ── tick / animation ──
 
@@ -1286,12 +1268,9 @@ class ClaudeNotch(QWidget):
         if abs(self._current_opacity - self._target_opacity) > 0.01:
             self._current_opacity = self._target_opacity
             self.setWindowOpacity(self._current_opacity)
-        # Adaptive tick rate: 30fps when active/expanded, 10fps when idle+collapsed
-        needs_fast = (self._expanded or self._at.isActive()
-                      or self.sessions.any_working or self.sessions.any_waiting)
-        target_interval = self.TICK_ACTIVE if needs_fast else self.TICK_IDLE
-        if self._tt.interval() != target_interval:
-            self._tt.setInterval(target_interval)
+        # Always run at full 30fps so Clawd animates smoothly
+        if self._tt.interval() != self.TICK_ACTIVE:
+            self._tt.setInterval(self.TICK_ACTIVE)
         self.update()
 
     def _animate(self):
@@ -1809,17 +1788,16 @@ class ClaudeNotch(QWidget):
             cy = (self.HH - 10 * ps) / 2 + 1
         b = self._bounce
         tint = None
-        is_working = self.sessions.any_working
         if self.sessions.any_waiting:
             tint = C["coral"]
-        elif is_working:
+        elif self.sessions.any_working:
             q = 0.5 + 0.5 * math.sin(self._pulse * 2)
             tint = QColor(int(217 + 23 * q), int(119 + 66 * q), int(87 - 32 * q))
         active = self.sessions.get_active_sessions()
         emotion = active[0].emotion if active else "neutral"
         draw_clawd(
             p, cx, cy, ps, b, tint, ex, ey, emotion,
-            eye_glow=is_working, glow_phase=self._pulse,
+            eye_glow=True, glow_phase=self._pulse,
         )
         # Mood particles — tiny hearts (happy) or rain drops (sad/sob)
         if emotion in ("happy", "sad", "sob"):
@@ -1942,7 +1920,7 @@ class ClaudeNotch(QWidget):
         # -- CLAWD ICON (small, top-left) --
         draw_clawd(
             pr, L, top + 2, 2.0, self._bounce, None, 0, 0, "neutral",
-            eye_glow=self.sessions.any_working, glow_phase=self._pulse,
+            eye_glow=True, glow_phase=self._pulse,
         )
 
         # -- TITLE BAR with session pill + refresh button --
