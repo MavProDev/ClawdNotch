@@ -97,8 +97,11 @@ def main():
 
     # Restore persisted sessions from previous run
     sm.restore_state()
-    # Scan for running Claude processes immediately
-    sm.scan_processes()
+    # Scan for running Claude processes once event loop is running (not before)
+    # so signals fire properly and windows are fully enumerable
+    QTimer.singleShot(0, sm.scan_processes)
+    # Second scan shortly after startup catches windows that were slow to register titles
+    QTimer.singleShot(3000, sm.scan_processes)
 
     # Periodic process scan every 15 seconds
     proc_timer = QTimer()

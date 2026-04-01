@@ -1282,9 +1282,9 @@ class ClaudeNotch(QWidget):
     def _tick(self):
         self._bounce += 0.08
         self._pulse += 0.1
-        # Smooth dim transition
+        # Snap dim transition — no fade, just set it
         if abs(self._current_opacity - self._target_opacity) > 0.01:
-            self._current_opacity += (self._target_opacity - self._current_opacity) * 0.05
+            self._current_opacity = self._target_opacity
             self.setWindowOpacity(self._current_opacity)
         # Adaptive tick rate: 30fps when active/expanded, 10fps when idle+collapsed
         needs_fast = (self._expanded or self._at.isActive()
