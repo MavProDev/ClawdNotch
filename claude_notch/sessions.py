@@ -387,10 +387,12 @@ class SessionManager(QObject):
         """
         from claude_notch.system_monitor import _find_claude_windows, _find_claude_processes
         active_pids = set()
+        scan_ok = False
         try:
             windows = _find_claude_windows()
             processes = _find_claude_processes()
             active_pids = {w['pid'] for w in windows} | {p['pid'] for p in processes}
+            scan_ok = True
         except Exception:
             pass
         with self._lock:
@@ -402,8 +404,8 @@ class SessionManager(QObject):
                 if v.state == "completed":
                     to_remove.append(sid)
                     continue
-                # Process-detected sessions: remove if PID is gone
-                if v.detected_via == "process" and not proc_alive:
+                # Process-detected sessions: only remove if scan succeeded and PID is gone
+                if v.detected_via == "process" and scan_ok and not proc_alive:
                     to_remove.append(sid)
                     continue
                 # Hook sessions with no PID: only trust recent activity
@@ -412,7 +414,7 @@ class SessionManager(QObject):
                     to_remove.append(sid)
                     continue
                 # Any session inactive 10+ min with dead/unknown process
-                if age > 600 and not proc_alive:
+                if age > 600 and scan_ok and not proc_alive:
                     to_remove.append(sid)
                     continue
             for sid in to_remove:
