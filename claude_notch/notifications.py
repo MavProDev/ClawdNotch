@@ -83,7 +83,7 @@ class NotificationManager:
 
     def _show_clawd_toast(self, title, message, timeout, pid, ntype):
         """Show a ClawdToast on the main thread. Safe to call from any thread."""
-        from PyQt6.QtCore import QTimer
+        from PySide6.QtCore import QTimer
         # QTimer.singleShot(0, ...) schedules on the main thread's event loop
         QTimer.singleShot(0, lambda: self._create_toast(title, message, timeout, pid, ntype))
 
@@ -94,7 +94,7 @@ class NotificationManager:
 
     def _play_sound(self, sound_type):
         custom = self.config.get(f"custom_sound_{sound_type}", "")
-        if custom and os.path.exists(custom):
+        if custom and not custom.startswith("\\\\") and not custom.startswith("//") and os.path.exists(custom):
             try: winsound.PlaySound(custom, winsound.SND_FILENAME | winsound.SND_NODEFAULT); return
             except Exception: pass
         try:

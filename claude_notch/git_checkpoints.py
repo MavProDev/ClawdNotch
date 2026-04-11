@@ -25,9 +25,23 @@ class GitCheckpoints:
             return False
 
     @staticmethod
+    def _is_safe_path(project_dir: str) -> bool:
+        """Validate project_dir is a safe local path (not UNC, not relative)."""
+        if not project_dir:
+            return False
+        p = str(Path(project_dir).resolve())
+        if p.startswith("\\\\") or p.startswith("//"):
+            return False
+        if not Path(p).is_absolute() or not Path(p).is_dir():
+            return False
+        return True
+
+    @staticmethod
     def create(project_dir: str) -> str | None:
         """Create a snapshot. Returns the commit hash or None on failure."""
-        if not project_dir or not GitCheckpoints.is_git_repo(project_dir):
+        if not GitCheckpoints._is_safe_path(project_dir):
+            return None
+        if not GitCheckpoints.is_git_repo(project_dir):
             return None
         try:
             fd, tmp_idx = tempfile.mkstemp(suffix=".git-index")

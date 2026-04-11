@@ -5,8 +5,8 @@ claude_notch.ui.tray — System tray icon and menu
 
 from pathlib import Path
 
-from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
-from PyQt6.QtGui import QPainter, QColor, QPixmap, QIcon
+from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
+from PySide6.QtGui import QPainter, QColor, QPixmap, QIcon
 
 from claude_notch.config import HOOK_SERVER_PORT
 from claude_notch.hooks import install_hooks

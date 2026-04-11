@@ -18,18 +18,26 @@ import tempfile
 import threading
 from pathlib import Path
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PySide6.QtCore import QThread, Signal
 
 from claude_notch.config import CONFIG_DIR, HOOK_SERVER_PORT
 
 
 class HookServer(QThread):
-    event_received = pyqtSignal(dict)
+    event_received = Signal(dict)
+
+    # Valid event types from Claude Code hooks
+    VALID_EVENTS = {
+        "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop",
+        "Notification", "SessionStart", "SessionEnd", "UserPromptSubmit",
+        "SubagentStop",
+    }
 
     def __init__(self, port=HOOK_SERVER_PORT, parent=None):
         super().__init__(parent)
         self.port = port
         self._running = True
+        self._max_connections = threading.Semaphore(16)
 
     def stop(self):
         self._running = False
@@ -49,13 +57,22 @@ class HookServer(QThread):
         while self._running:
             try:
                 conn, _ = srv.accept()
-                threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
+                if self._max_connections.acquire(timeout=0.1):
+                    threading.Thread(target=self._handle_wrapped, args=(conn,), daemon=True).start()
+                else:
+                    conn.close()
             except socket.timeout:
                 continue
             except Exception as e:
                 if self._running:
                     print(f"[HookServer] {e}")
         srv.close()
+
+    def _handle_wrapped(self, conn):
+        try:
+            self._handle(conn)
+        finally:
+            self._max_connections.release()
 
     def _handle(self, conn):
         try:
@@ -77,12 +94,19 @@ class HookServer(QThread):
                             t = p[1]
                             break
                 try:
-                    self.event_received.emit(json.loads(t))
+                    parsed = json.loads(t)
+                    if not isinstance(parsed, dict):
+                        raise ValueError("Expected JSON object")
+                    if parsed.get("event") not in self.VALID_EVENTS:
+                        raise ValueError(f"Unknown event: {parsed.get('event')}")
+                    if not isinstance(parsed.get("session_id", ""), str) or not parsed.get("session_id"):
+                        raise ValueError("Missing or invalid session_id")
+                    self.event_received.emit(parsed)
                     try:
                         conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
                     except (socket.timeout, OSError):
                         pass
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, ValueError):
                     try:
                         conn.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\nBAD")
                     except (socket.timeout, OSError):
@@ -120,17 +144,17 @@ def install_hooks(port=HOOK_SERVER_PORT):
             print(f"[Hooks] Failed to read settings: {e}", file=sys.stderr)
     base_cmd = f'powershell.exe -ExecutionPolicy Bypass -File "{hd / "claude_notch_hook.ps1"}"'
     if "hooks" not in settings: settings["hooks"] = {}
+    def _is_our_hook(h):
+        if isinstance(h, dict):
+            for h_entry in h.get("hooks", []):
+                if isinstance(h_entry, dict) and "claude_notch_hook" in h_entry.get("command", ""):
+                    return True
+        return False
+
     for ev in ["PreToolUse","PostToolUse","PostToolUseFailure","Stop","Notification","SessionStart","SessionEnd","UserPromptSubmit","SubagentStop"]:
         cmd = f'{base_cmd} -EventType {ev}'
         hook = {"type": "command", "command": cmd, "timeout": 3000}
         if ev not in settings["hooks"]: settings["hooks"][ev] = []
-        # Remove old ClawdNotch entries — check command field specifically, not the whole dict
-        def _is_our_hook(h):
-            if isinstance(h, dict):
-                for h_entry in h.get("hooks", []):
-                    if isinstance(h_entry, dict) and "claude_notch_hook" in h_entry.get("command", ""):
-                        return True
-            return False
         settings["hooks"][ev] = [h for h in settings["hooks"][ev] if not _is_our_hook(h)]
         settings["hooks"][ev].append({"hooks": [hook]})
     # BUG FIX #9: Atomic write — use tempfile + os.replace instead of plain open("w")

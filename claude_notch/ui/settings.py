@@ -10,12 +10,12 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication, QWidget, QDialog, QLabel, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QCheckBox, QComboBox, QFileDialog, QScrollArea,
     QRadioButton, QMessageBox,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PySide6.QtCore import Qt, Signal
 
 from claude_notch import __version__
 from claude_notch.config import (
@@ -26,7 +26,7 @@ from claude_notch.system_monitor import set_auto_start
 
 
 class SettingsDialog(QDialog):
-    _update_toast_signal = pyqtSignal(str, str, int)  # title, message, timeout
+    _update_toast_signal = Signal(str, str, int)  # title, message, timeout
 
     def __init__(self, config, parent=None):
         super().__init__(parent)

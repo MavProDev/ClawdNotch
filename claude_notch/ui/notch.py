@@ -13,9 +13,9 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtWidgets import QApplication, QWidget
-from PyQt6.QtCore import Qt, QTimer, QPoint, QRectF, pyqtSignal
-from PyQt6.QtGui import (
+from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtCore import Qt, QTimer, QPoint, QRectF, Signal
+from PySide6.QtGui import (
     QPainter, QColor, QFont, QPainterPath, QLinearGradient, QConicalGradient,
     QPen, QBrush, QCursor, QFontMetrics,
 )
@@ -29,7 +29,7 @@ from claude_notch.ui.toast import show_clawd_toast
 from claude_notch.ui.settings import open_settings_dialog
 
 class ClaudeNotch(QWidget):
-    _update_signal = pyqtSignal(str, str)  # version, url — thread-safe update notification
+    _update_signal = Signal(str, str)  # version, url — thread-safe update notification
     HW, HH, EW, EH = 300, 34, 560, 500
     VW, VH = 34, 200
 

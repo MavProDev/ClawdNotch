@@ -34,7 +34,7 @@ def test_hook_server_accepts_tcp(qapp):
             pass
         sock.close()
         # Poll for signal delivery with timeout instead of fixed sleeps
-        from PyQt6.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         for _ in range(20):
             QApplication.processEvents()
             time.sleep(0.1)

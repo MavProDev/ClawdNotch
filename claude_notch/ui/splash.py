@@ -5,9 +5,9 @@ Shows on every launch. Skippable via click or Escape.
 First launch shows "Install Hooks" button.
 """
 
-from PyQt6.QtWidgets import QApplication, QWidget
-from PyQt6.QtCore import Qt, QTimer, QRectF, pyqtSignal
-from PyQt6.QtGui import QPainter, QColor, QBrush, QPen, QPainterPath, QFont
+from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtCore import Qt, QTimer, QRectF, Signal
+from PySide6.QtGui import QPainter, QColor, QBrush, QPen, QPainterPath, QFont
 
 from claude_notch.config import C, SPINNER_FRAMES, HOOK_SERVER_PORT
 from claude_notch.ui.clawd import draw_clawd, _with_alpha
@@ -16,7 +16,7 @@ from claude_notch.ui.clawd import draw_clawd, _with_alpha
 class SplashScreen(QWidget):
     """Terminal-style boot splash. Shows on every launch. Skippable."""
 
-    finished = pyqtSignal()
+    finished = Signal()
 
     # Cached fonts
     _FS24B = QFont("Segoe UI", 24, QFont.Weight.Bold)
@@ -57,7 +57,7 @@ class SplashScreen(QWidget):
         if screen:
             scr = screen.geometry()
         else:
-            from PyQt6.QtCore import QRect
+            from PySide6.QtCore import QRect
             scr = QRect(0, 0, 1920, 1080)
         self.move(scr.x() + (scr.width() - 480) // 2,
                   scr.y() + (scr.height() - 360) // 2)

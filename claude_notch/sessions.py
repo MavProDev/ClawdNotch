@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from dataclasses import dataclass, field
 
-from PyQt6.QtCore import pyqtSignal, QObject
+from PySide6.QtCore import Signal, QObject
 
 from claude_notch.config import (
     CONFIG_DIR,
@@ -203,11 +203,11 @@ class EmotionEngine:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class SessionManager(QObject):
-    session_updated = pyqtSignal()
-    task_completed = pyqtSignal(str, str)
-    needs_attention = pyqtSignal(str, int)  # project_name, pid
-    budget_alert = pyqtSignal(str)
-    achievement = pyqtSignal(str)  # achievement message
+    session_updated = Signal()
+    task_completed = Signal(str, str)
+    needs_attention = Signal(str, int)  # project_name, pid
+    budget_alert = Signal(str)
+    achievement = Signal(str)  # achievement message
 
     def __init__(self, usage_tracker, emotion_engine=None, todo_manager=None, sparkline=None, config=None):
         super().__init__()
@@ -230,8 +230,10 @@ class SessionManager(QObject):
     def _projects_match(dir_a: str, dir_b: str) -> bool:
         """Check if two project directories refer to the same project.
 
-        Matches by exact path first, then by basename (case-insensitive).
-        Window titles often only contain the folder name, not the full path.
+        Matches by exact normalized path first. Falls back to basename
+        matching only when one of the values is a bare name (no path
+        separators), which handles window titles that contain only the
+        folder name.
         """
         if not dir_a or not dir_b:
             return False
@@ -240,7 +242,12 @@ class SessionManager(QObject):
         b = dir_b.replace("\\", "/").rstrip("/").lower()
         if a == b:
             return True
-        # Basename match — handles "Claude Notch" matching "C:\...\Claude Notch"
+        # Only basename match if at least one value is a bare name (no path separators)
+        # This handles window titles like "Claude Notch" matching full paths
+        a_is_bare = "/" not in a
+        b_is_bare = "/" not in b
+        if not (a_is_bare or b_is_bare):
+            return False
         name_a = a.rsplit("/", 1)[-1]
         name_b = b.rsplit("/", 1)[-1]
         return name_a == name_b and name_a != ""
@@ -290,9 +297,10 @@ class SessionManager(QObject):
 
     def _on_stop(self, s, event):
         s.state = "idle"
-        sm = event.get("summary", "Task completed")
+        sm = str(event.get("summary", "Task completed"))[:500]
         s.tasks_completed.append({"summary": sm, "time": datetime.now().strftime("%Y-%m-%d %H:%M"), "status": "completed"})
-        self.task_completed.emit(s.project_name, sm)
+        s.tasks_completed = s.tasks_completed[-20:]
+        self.task_completed.emit(s.project_name[:200], sm)
 
     def _on_session_end(self, s, event):
         s.state = "completed"
@@ -329,6 +337,19 @@ class SessionManager(QObject):
             self._sparkline.record()
         with self._lock:
             if sid not in self.sessions:
+                # Cap maximum sessions to prevent unbounded growth
+                if len(self.sessions) >= 50:
+                    oldest = min(
+                        (s for s in self.sessions if self.sessions[s].state != "working"),
+                        key=lambda s: self.sessions[s].last_activity,
+                        default=None,
+                    )
+                    if oldest:
+                        del self.sessions[oldest]
+                        if self._emotion:
+                            self._emotion.remove_session(oldest)
+                        if self._todos:
+                            self._todos.remove_session(oldest)
                 model = (self._config.get("default_model", "sonnet") if self._config else "sonnet")
                 ctx = MODEL_CONTEXT_LIMITS.get(model, 200_000)
                 new_session = Session(
