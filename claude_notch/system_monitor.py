@@ -351,24 +351,62 @@ def _extract_project_from_cmdline(cmdline: str) -> str:
 
 
 def _focus_window_by_pid(pid):
-    """Bring the window belonging to a PID to the foreground."""
+    """Bring the window belonging to a PID to the foreground.
+
+    Uses AttachThreadInput trick to bypass Windows' foreground lock
+    restriction — a background process normally can't steal focus.
+    We temporarily attach our thread to the foreground window's thread,
+    which grants us permission to call SetForegroundWindow.
+    """
+    if not pid:
+        return
     try:
         target_hwnd = None
+        best_hwnd = None
 
         def callback(hwnd, _):
-            nonlocal target_hwnd
+            nonlocal target_hwnd, best_hwnd
             if not ctypes.windll.user32.IsWindowVisible(hwnd):
                 return True
             p = ctypes.c_ulong()
             ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(p))
             if p.value == pid:
-                target_hwnd = hwnd
-                return False
+                # Prefer windows with titles (skip empty child windows)
+                buf = ctypes.create_unicode_buffer(256)
+                ctypes.windll.user32.GetWindowTextW(hwnd, buf, 256)
+                if buf.value:
+                    target_hwnd = hwnd
+                    return False  # found a titled window, stop
+                elif not best_hwnd:
+                    best_hwnd = hwnd  # fallback to first visible window
             return True
+
         ctypes.windll.user32.EnumWindows(WNDENUMPROC(callback), 0)
-        if target_hwnd:
-            ctypes.windll.user32.ShowWindow(target_hwnd, 9)
-            ctypes.windll.user32.SetForegroundWindow(target_hwnd)
+        hwnd = target_hwnd or best_hwnd
+        if not hwnd:
+            return
+
+        # AttachThreadInput trick: attach our thread to the foreground
+        # thread so Windows allows us to call SetForegroundWindow
+        fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
+        our_tid = ctypes.windll.kernel32.GetCurrentThreadId()
+        fg_tid = ctypes.windll.user32.GetWindowThreadProcessId(fg_hwnd, None)
+        attached = False
+        if our_tid != fg_tid:
+            attached = bool(ctypes.windll.user32.AttachThreadInput(our_tid, fg_tid, True))
+
+        try:
+            # Restore if minimized
+            if ctypes.windll.user32.IsIconic(hwnd):
+                ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            else:
+                ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW
+
+            ctypes.windll.user32.BringWindowToTop(hwnd)
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+        finally:
+            if attached:
+                ctypes.windll.user32.AttachThreadInput(our_tid, fg_tid, False)
     except Exception as e:
         print(f"[Focus] {e}", file=sys.stderr)
 
