@@ -122,12 +122,12 @@ class ClaudeNotch(QWidget):
         # Hover timers
         self._ht = QTimer(self)
         self._ht.setSingleShot(True)
-        self._ht.setInterval(250)
+        self._ht.setInterval(120)  # snappy expand trigger
         self._ht.timeout.connect(self._expand)
 
         self._ct = QTimer(self)
         self._ct.setSingleShot(True)
-        self._ct.setInterval(600)
+        self._ct.setInterval(300)  # responsive collapse
         self._ct.timeout.connect(self._collapse)
 
         # Main tick (animation / bounce)
@@ -143,7 +143,7 @@ class ClaudeNotch(QWidget):
 
         # Safety-net hover poll: catches missed enter/leave events
         self._hover_timer = QTimer(self)
-        self._hover_timer.setInterval(200)
+        self._hover_timer.setInterval(150)  # tighter polling for snappier response
         self._hover_timer.timeout.connect(self._hover_check)
         self._hover_timer.start()
 
@@ -311,18 +311,18 @@ class ClaudeNotch(QWidget):
         self.update()
 
     def _animate(self):
-        sp = 0.08
+        sp = 0.14  # faster animation (was 0.08 — now ~7 frames / ~110ms)
         if self._anim_dir > 0:
             self._anim_p = min(1.0, self._anim_p + sp)
         elif self._anim_dir < 0:
-            self._anim_p = max(0.0, self._anim_p - sp)
+            self._anim_p = max(0.0, self._anim_p - sp * 1.3)  # collapse slightly faster than expand
         if self._anim_p >= 1.0 and self._anim_dir > 0:
             self._at.stop()
         if self._anim_p <= 0.0 and self._anim_dir < 0:
             self._at.stop()
             self._expanded = False
             self._anchor_pos = self.pos()
-        t = 1 - (1 - self._anim_p) ** 3
+        t = 1 - (1 - self._anim_p) ** 2  # quadratic ease-out (was cubic — snappier start)
         w = int(self.nw + (self.ew - self.nw) * t)
         h = int(self.nh + (self.eh - self.nh) * t)
         ax, ay = self._anchor_pos.x(), self._anchor_pos.y()
