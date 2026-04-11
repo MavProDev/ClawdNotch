@@ -350,14 +350,35 @@ def _extract_project_from_cmdline(cmdline: str) -> str:
     return ""
 
 
-def _focus_window_by_pid(pid):
-    """Bring the window belonging to a PID to the foreground.
+def _bring_to_front(hwnd):
+    """Bring a specific window handle to the foreground.
 
     Uses AttachThreadInput trick to bypass Windows' foreground lock
     restriction — a background process normally can't steal focus.
-    We temporarily attach our thread to the foreground window's thread,
-    which grants us permission to call SetForegroundWindow.
     """
+    try:
+        fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
+        our_tid = ctypes.windll.kernel32.GetCurrentThreadId()
+        fg_tid = ctypes.windll.user32.GetWindowThreadProcessId(fg_hwnd, None)
+        attached = False
+        if our_tid != fg_tid:
+            attached = bool(ctypes.windll.user32.AttachThreadInput(our_tid, fg_tid, True))
+        try:
+            if ctypes.windll.user32.IsIconic(hwnd):
+                ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            else:
+                ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW
+            ctypes.windll.user32.BringWindowToTop(hwnd)
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+        finally:
+            if attached:
+                ctypes.windll.user32.AttachThreadInput(our_tid, fg_tid, False)
+    except Exception as e:
+        print(f"[Focus] BringToFront failed: {e}", file=sys.stderr)
+
+
+def _focus_window_by_pid(pid):
+    """Bring the window belonging to a PID to the foreground."""
     if not pid:
         return
     try:
@@ -371,44 +392,82 @@ def _focus_window_by_pid(pid):
             p = ctypes.c_ulong()
             ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(p))
             if p.value == pid:
-                # Prefer windows with titles (skip empty child windows)
                 buf = ctypes.create_unicode_buffer(256)
                 ctypes.windll.user32.GetWindowTextW(hwnd, buf, 256)
                 if buf.value:
                     target_hwnd = hwnd
-                    return False  # found a titled window, stop
+                    return False
                 elif not best_hwnd:
-                    best_hwnd = hwnd  # fallback to first visible window
+                    best_hwnd = hwnd
             return True
 
         ctypes.windll.user32.EnumWindows(WNDENUMPROC(callback), 0)
         hwnd = target_hwnd or best_hwnd
-        if not hwnd:
-            return
-
-        # AttachThreadInput trick: attach our thread to the foreground
-        # thread so Windows allows us to call SetForegroundWindow
-        fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
-        our_tid = ctypes.windll.kernel32.GetCurrentThreadId()
-        fg_tid = ctypes.windll.user32.GetWindowThreadProcessId(fg_hwnd, None)
-        attached = False
-        if our_tid != fg_tid:
-            attached = bool(ctypes.windll.user32.AttachThreadInput(our_tid, fg_tid, True))
-
-        try:
-            # Restore if minimized
-            if ctypes.windll.user32.IsIconic(hwnd):
-                ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-            else:
-                ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW
-
-            ctypes.windll.user32.BringWindowToTop(hwnd)
-            ctypes.windll.user32.SetForegroundWindow(hwnd)
-        finally:
-            if attached:
-                ctypes.windll.user32.AttachThreadInput(our_tid, fg_tid, False)
+        if hwnd:
+            _bring_to_front(hwnd)
     except Exception as e:
-        print(f"[Focus] {e}", file=sys.stderr)
+        print(f"[Focus] PID lookup failed: {e}", file=sys.stderr)
+
+
+def _focus_window_by_project(project_name):
+    """Bring a Claude Code window to the foreground by matching the project name in the title.
+
+    More reliable than PID-based focus because:
+    - Works even when PID hasn't been captured yet (hook sessions)
+    - Finds the terminal window directly by what the user sees
+    """
+    if not project_name:
+        return
+    try:
+        target_hwnd = None
+        project_lower = project_name.lower()
+
+        def callback(hwnd, _):
+            nonlocal target_hwnd
+            if not ctypes.windll.user32.IsWindowVisible(hwnd):
+                return True
+            buf = ctypes.create_unicode_buffer(512)
+            ctypes.windll.user32.GetWindowTextW(hwnd, buf, 512)
+            title = buf.value
+            lower = title.lower()
+            # Skip our own windows
+            if 'claude notch' in lower or 'claude-notch' in lower:
+                return True
+            # Skip browsers
+            if any(b in lower for b in ('chrome', 'firefox', 'edge', 'brave', 'opera')):
+                return True
+            # Match project name in window title
+            if project_lower in lower and 'claude' in lower:
+                target_hwnd = hwnd
+                return False
+            # Also match just the project name for terminal windows
+            if project_lower in lower:
+                # Verify it's a terminal/IDE process
+                pid = ctypes.c_ulong()
+                ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                h_proc = ctypes.windll.kernel32.OpenProcess(0x0410, False, pid.value)
+                if h_proc:
+                    exe_buf = ctypes.create_unicode_buffer(260)
+                    size = ctypes.c_ulong(260)
+                    if ctypes.windll.kernel32.QueryFullProcessImageNameW(h_proc, 0, exe_buf, ctypes.byref(size)):
+                        exe_name = exe_buf.value.split("\\")[-1].lower()
+                        terminal_exes = {
+                            "windowsterminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
+                            "code.exe", "cursor.exe", "windsurf.exe", "claude.exe",
+                            "wezterm-gui.exe", "alacritty.exe",
+                        }
+                        if exe_name in terminal_exes:
+                            ctypes.windll.kernel32.CloseHandle(h_proc)
+                            target_hwnd = hwnd
+                            return False
+                    ctypes.windll.kernel32.CloseHandle(h_proc)
+            return True
+
+        ctypes.windll.user32.EnumWindows(WNDENUMPROC(callback), 0)
+        if target_hwnd:
+            _bring_to_front(target_hwnd)
+    except Exception as e:
+        print(f"[Focus] Project lookup failed: {e}", file=sys.stderr)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

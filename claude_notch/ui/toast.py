@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, QTimer, QRectF
 from PySide6.QtGui import QPainter, QColor, QBrush, QPen, QPainterPath, QFont
 
 from claude_notch.config import C, SPINNER_FRAMES
-from claude_notch.system_monitor import _focus_window_by_pid
+from claude_notch.system_monitor import _focus_window_by_pid, _focus_window_by_project
 from claude_notch.ui.clawd import draw_clawd, _with_alpha
 
 
@@ -25,12 +25,13 @@ class ClawdToast(QWidget):
 
     _active_toasts = []  # class-level stack so multiple toasts don't overlap
 
-    def __init__(self, title, message, timeout=8, pid=0, ntype="info"):
+    def __init__(self, title, message, timeout=8, pid=0, ntype="info", project_name=""):
         super().__init__()
         self._title = title
         self._message = message
         self._timeout = timeout
         self._pid = pid
+        self._project_name = project_name
         self._ntype = ntype  # "completion", "attention", "budget", "info"
         self._bounce = 0.0
         self._pulse = 0.0
@@ -130,7 +131,9 @@ class ClawdToast(QWidget):
             toast._target_x = scr.x() + scr.width() - 340 - 16
 
     def mousePressEvent(self, e):
-        if self._pid:
+        if self._project_name:
+            _focus_window_by_project(self._project_name)
+        elif self._pid:
             _focus_window_by_pid(self._pid)
         self._phase = "fade_out"
 
@@ -206,8 +209,8 @@ class ClawdToast(QWidget):
         p.end()
 
 
-def show_clawd_toast(title, message, timeout=8, pid=0, ntype="info"):
+def show_clawd_toast(title, message, timeout=8, pid=0, ntype="info", project_name=""):
     """Show a custom ClawdToast notification. Call from any thread via QTimer."""
-    toast = ClawdToast(title, message, timeout, pid, ntype)
+    toast = ClawdToast(title, message, timeout, pid, ntype, project_name=project_name)
     toast.show()
     return toast
