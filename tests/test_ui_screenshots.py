@@ -35,8 +35,8 @@ def _make_config_mock():
 
 def _make_notch(qapp):
     """Helper: build a ClaudeNotch with full mocks."""
-    from PyQt6.QtWidgets import QApplication
-    from PyQt6.QtCore import QRect
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import QRect
 
     from claude_notch.usage import SparklineTracker, TodoManager
     from claude_notch.sessions import EmotionEngine
@@ -90,7 +90,7 @@ def _make_notch(qapp):
 
 def test_collapsed_renders_pixels(qapp):
     """A collapsed notch widget.grab() should produce a non-empty pixmap."""
-    from PyQt6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication
     notch = _make_notch(qapp)
     notch.show()
     QApplication.processEvents()
@@ -102,8 +102,8 @@ def test_collapsed_renders_pixels(qapp):
 
 def test_expanded_has_title(qapp):
     """After expanding, the grabbed pixmap should not be all black (basic sanity)."""
-    from PyQt6.QtWidgets import QApplication
-    from PyQt6.QtCore import QRect
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import QRect
     from unittest.mock import patch as _patch
 
     mock_screen = MagicMock()
@@ -126,8 +126,8 @@ def test_expanded_has_title(qapp):
 
 def test_splash_renders(qapp):
     """SplashScreen.grab() should produce a non-empty pixmap."""
-    from PyQt6.QtWidgets import QApplication
-    from PyQt6.QtCore import QRect
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import QRect
     from claude_notch.ui import SplashScreen
 
     mock_screen = MagicMock()
@@ -147,8 +147,8 @@ def test_splash_renders(qapp):
 
 def test_settings_dialog_centered(qapp):
     """SettingsDialog should open and render without crashing."""
-    from PyQt6.QtWidgets import QApplication
-    from PyQt6.QtCore import QRect
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import QRect
     from claude_notch.ui import SettingsDialog
 
     mock_screen = MagicMock()

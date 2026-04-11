@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PySide6.QtCore import QThread, Signal
 import requests
 
 from claude_notch.config import (
@@ -179,7 +179,7 @@ class UsageTracker:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class UsagePoller(QThread):
-    usage_updated = pyqtSignal(list)  # list of per-key status dicts
+    usage_updated = Signal(list)  # list of per-key status dicts
 
     def __init__(self, config, parent=None):
         super().__init__(parent)
@@ -503,7 +503,11 @@ def export_usage_report(tracker, config, fmt="markdown"):
         print(f"[Export] Failed to write report: {e}", file=sys.stderr)
         # Fall back to home directory
         out = Path.home() / f"claude-notch-report-{ts}.{ext}"
-        out.write_text(content, encoding="utf-8")
+        try:
+            out.write_text(content, encoding="utf-8")
+        except (OSError, PermissionError) as e2:
+            print(f"[Export] Fallback write also failed: {e2}", file=sys.stderr)
+            return ""
     return str(out)
 
 

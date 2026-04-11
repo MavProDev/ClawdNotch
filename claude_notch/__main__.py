@@ -1,8 +1,8 @@
 """ClawdNotch -- entry point. Run with: python -m claude_notch"""
 import sys
 import threading
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QTimer
 
 from claude_notch import __version__
 from claude_notch.config import ConfigManager, apply_theme, HOOK_SERVER_PORT
@@ -159,9 +159,12 @@ def main():
         hs.wait(2000)
         sm.save_state()
         tracker.flush()
-        # BUG FIX #3: Removed dead code that wrote was_expanded during cleanup
-        # (was: config.set("was_expanded", notch._expanded, save_now=False))
         config.flush()
+        if HAS_KEYBOARD:
+            try:
+                kb_module.unhook_all()
+            except Exception:
+                pass
         release_lock()
 
     app.aboutToQuit.connect(cleanup)

@@ -17,8 +17,8 @@ def qapp():
     ``primaryScreen`` so tests that never display real windows can run
     in headless / CI environments.
     """
-    from PyQt6.QtWidgets import QApplication
-    from PyQt6.QtCore import QRect
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import QRect
 
     app = QApplication.instance()
     if app is None:

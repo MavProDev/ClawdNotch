@@ -7,9 +7,9 @@ animation. Replaces generic Windows toast with branded ClawdNotch aesthetic.
 
 import math
 
-from PyQt6.QtWidgets import QApplication, QWidget
-from PyQt6.QtCore import Qt, QTimer, QRectF
-from PyQt6.QtGui import QPainter, QColor, QBrush, QPen, QPainterPath, QFont
+from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtCore import Qt, QTimer, QRectF
+from PySide6.QtGui import QPainter, QColor, QBrush, QPen, QPainterPath, QFont
 
 from claude_notch.config import C, SPINNER_FRAMES
 from claude_notch.system_monitor import _focus_window_by_pid

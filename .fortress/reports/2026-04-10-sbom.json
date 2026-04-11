@@ -1,0 +1,90 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:f7a1b3c4-d5e6-4f78-9a0b-1c2d3e4f5a6b",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-04-10T00:00:00Z",
+    "tools": [
+      {
+        "vendor": "FORTRESS",
+        "name": "fortress",
+        "version": "1.0.0"
+      }
+    ],
+    "component": {
+      "name": "claude-notch",
+      "version": "4.0.0",
+      "type": "application"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "PyQt6",
+      "version": ">=6.6.0",
+      "scope": "required",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "type": "library",
+      "name": "plyer",
+      "version": ">=2.1.0",
+      "scope": "required",
+      "license": "MIT"
+    },
+    {
+      "type": "library",
+      "name": "requests",
+      "version": ">=2.31.0",
+      "scope": "required",
+      "license": "Apache-2.0"
+    },
+    {
+      "type": "library",
+      "name": "keyboard",
+      "version": ">=0.13.5",
+      "scope": "required",
+      "license": "MIT"
+    },
+    {
+      "type": "library",
+      "name": "pytest",
+      "version": ">=8.0",
+      "scope": "optional",
+      "license": "MIT"
+    },
+    {
+      "type": "library",
+      "name": "pytest-timeout",
+      "version": ">=2.2",
+      "scope": "optional",
+      "license": "MIT"
+    },
+    {
+      "type": "library",
+      "name": "ruff",
+      "version": ">=0.4",
+      "scope": "optional",
+      "license": "MIT"
+    },
+    {
+      "type": "library",
+      "name": "pyinstaller",
+      "version": ">=6.0",
+      "scope": "optional",
+      "license": "GPL-2.0-or-later"
+    },
+    {
+      "type": "library",
+      "name": "pytest-qt",
+      "version": ">=4.2",
+      "scope": "optional",
+      "license": "MIT"
+    }
+  ],
+  "notes": {
+    "lockfile": "NONE — no pip lockfile (pip.lock, Pipfile.lock, poetry.lock) found. Dependencies are specified with minimum version constraints only in requirements.txt and pyproject.toml. This is a supply chain risk: pip install may resolve to different versions across installs.",
+    "lockfile_hash": "hash-not-computed"
+  }
+}
