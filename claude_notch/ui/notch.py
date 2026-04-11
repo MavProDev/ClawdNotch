@@ -427,10 +427,14 @@ class ClaudeNotch(QWidget):
                 # Click-to-focus or clipboard on session row
                 for rect, sess in self._session_click_rects:
                     if rect.contains(e.pos().x(), e.pos().y()):
-                        if self.config.get("click_to_focus", True) and sess.pid:
-                            _focus_window_by_pid(sess.pid)
-                            return
-                        elif self.config.get("clipboard_on_click", True) and sess.project_dir:
+                        if self.config.get("click_to_focus", True):
+                            if not sess.pid:
+                                # PID not yet known — trigger a scan and retry
+                                self.sessions.scan_processes()
+                            if sess.pid:
+                                _focus_window_by_pid(sess.pid)
+                                return
+                        if self.config.get("clipboard_on_click", True) and sess.project_dir:
                             QApplication.clipboard().setText(sess.project_dir)
                             return
             self._ht.stop()
