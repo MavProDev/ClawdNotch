@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PySide6.QtCore import QThread, Signal
 import requests
 
 from claude_notch.config import (
@@ -179,7 +179,7 @@ class UsageTracker:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class UsagePoller(QThread):
-    usage_updated = pyqtSignal(list)  # list of per-key status dicts
+    usage_updated = Signal(list)  # list of per-key status dicts
 
     def __init__(self, config, parent=None):
         super().__init__(parent)

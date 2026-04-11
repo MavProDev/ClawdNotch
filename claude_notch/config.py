@@ -8,6 +8,8 @@ Every other module in claude_notch imports from here.
 import sys
 import os
 import json
+import logging
+import logging.handlers
 import tempfile
 import threading
 import base64
@@ -16,7 +18,7 @@ import ctypes.wintypes
 from pathlib import Path
 from datetime import datetime
 
-from PyQt6.QtGui import QColor
+from PySide6.QtGui import QColor
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PATHS & PORTS
@@ -26,6 +28,40 @@ HOOK_SERVER_PORT = 19748
 CONFIG_DIR = Path.home() / ".claude-notch"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 LOCK_FILE = CONFIG_DIR / "notch.lock"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STRUCTURED LOGGING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def setup_logging():
+    """Initialize structured logging with file rotation and console output."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    log = logging.getLogger("clawdnotch")
+    if log.handlers:
+        return log  # already initialized
+    log.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s  %(message)s",
+                            datefmt="%Y-%m-%d %H:%M:%S")
+    # Rotating file handler: 2MB, 3 backups
+    try:
+        fh = logging.handlers.RotatingFileHandler(
+            CONFIG_DIR / "clawdnotch.log", maxBytes=2 * 1024 * 1024, backupCount=3,
+            encoding="utf-8",
+        )
+        fh.setLevel(logging.INFO)
+        fh.setFormatter(fmt)
+        log.addHandler(fh)
+    except Exception:
+        pass
+    # Console handler (stderr) for WARNING+
+    ch = logging.StreamHandler(sys.stderr)
+    ch.setLevel(logging.WARNING)
+    ch.setFormatter(fmt)
+    log.addHandler(ch)
+    return log
+
+
+log = setup_logging()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # DEFAULT CONFIG  (35 keys)
@@ -177,7 +213,7 @@ def _atomic_write(path: Path, data: dict) -> bool:
                 pass
             raise
     except Exception as e:
-        print(f"[Write] Failed to save {path.name}: {e}", file=sys.stderr)
+        log.error("Failed to save %s: %s", path.name, e)
         return False
 
 
@@ -216,9 +252,9 @@ def _dpapi_encrypt(plaintext: str) -> str:
             ctypes.windll.kernel32.LocalFree(blob_out.pbData)
             return "dpapi:" + base64.b64encode(encrypted).decode("ascii")
         else:
-            print("[SECURITY] DPAPI encryption failed — CryptProtectData returned False", file=sys.stderr)
+            log.warning("[SECURITY] DPAPI encryption failed — CryptProtectData returned False")
     except Exception as e:
-        print(f"[SECURITY] DPAPI encryption failed: {e}", file=sys.stderr)
+        log.warning("[SECURITY] DPAPI encryption failed: %s", e)
     return plaintext  # fallback: return as-is (logged above)
 
 
@@ -241,15 +277,36 @@ def _dpapi_decrypt(stored: str) -> str:
             finally:
                 ctypes.windll.kernel32.LocalFree(blob_out.pbData)
         else:
-            print("[SECURITY] DPAPI decryption failed — CryptUnprotectData returned False", file=sys.stderr)
+            log.warning("[SECURITY] DPAPI decryption failed — CryptUnprotectData returned False")
     except Exception as e:
-        print(f"[SECURITY] DPAPI decryption failed: {e}", file=sys.stderr)
+        log.warning("[SECURITY] DPAPI decryption failed: %s", e)
     return ""  # return empty string instead of ciphertext blob
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONFIG MANAGER  (BUG FIX #1: thread-safe with threading.Lock)
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def _secure_directory(path: Path):
+    """Set restrictive ACLs on a directory (Windows only).
+
+    Removes inherited permissions and grants only the current user full control.
+    Fails silently if icacls is unavailable.
+    """
+    try:
+        import subprocess
+        username = os.environ.get("USERNAME", "")
+        if not username:
+            return
+        subprocess.run(
+            ["icacls", str(path), "/inheritance:r",
+             "/grant:r", f"{username}:(OI)(CI)F"],
+            capture_output=True, timeout=5,
+            creationflags=0x08000000,  # CREATE_NO_WINDOW
+        )
+    except Exception:
+        pass
+
 
 class ConfigManager:
     """Persistent configuration with thread-safe access.
@@ -261,6 +318,7 @@ class ConfigManager:
 
     def __init__(self):
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        _secure_directory(CONFIG_DIR)
         self._lock = threading.Lock()
         self.config = self._load()
         self._migrate()
@@ -300,7 +358,7 @@ class ConfigManager:
                 with open(CONFIG_FILE) as f:
                     return {**DEFAULT_CONFIG, **json.load(f)}
             except Exception as e:
-                print(f"[Config] Failed to load: {e}", file=sys.stderr)
+                log.error("Config load failed: %s", e)
         return dict(DEFAULT_CONFIG)
 
     def save(self):

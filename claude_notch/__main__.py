@@ -1,8 +1,8 @@
 """ClawdNotch -- entry point. Run with: python -m claude_notch"""
 import sys
 import threading
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QTimer
 
 from claude_notch import __version__
 from claude_notch.config import ConfigManager, apply_theme, HOOK_SERVER_PORT

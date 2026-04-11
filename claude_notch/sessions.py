@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from dataclasses import dataclass, field
 
-from PyQt6.QtCore import pyqtSignal, QObject
+from PySide6.QtCore import Signal, QObject
 
 from claude_notch.config import (
     CONFIG_DIR,
@@ -203,11 +203,11 @@ class EmotionEngine:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class SessionManager(QObject):
-    session_updated = pyqtSignal()
-    task_completed = pyqtSignal(str, str)
-    needs_attention = pyqtSignal(str, int)  # project_name, pid
-    budget_alert = pyqtSignal(str)
-    achievement = pyqtSignal(str)  # achievement message
+    session_updated = Signal()
+    task_completed = Signal(str, str)
+    needs_attention = Signal(str, int)  # project_name, pid
+    budget_alert = Signal(str)
+    achievement = Signal(str)  # achievement message
 
     def __init__(self, usage_tracker, emotion_engine=None, todo_manager=None, sparkline=None, config=None):
         super().__init__()
