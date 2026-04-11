@@ -47,7 +47,7 @@ def test_themes_count():
 
 def test_apply_theme_changes_C():
     """apply_theme('blue') should change C['coral'] to the blue accent."""
-    from PyQt6.QtGui import QColor
+    from PySide6.QtGui import QColor
     C["coral"].getRgb()
     apply_theme("blue")
     blue_accent = QColor(*THEMES["blue"]["accent"])

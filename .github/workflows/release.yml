@@ -14,6 +14,8 @@ jobs:
           python-version: '3.12'
       - run: pip install -r requirements.txt -r requirements-dev.txt
       - run: python -m pytest tests/ -v --timeout=30 --tb=short
+      - run: pip install pip-audit
+      - run: python -m pip_audit -r requirements.txt --desc || true
       - run: >
           pyinstaller --onefile --noconsole --icon=clawd.ico --name=ClawdNotch
           --hidden-import=plyer.platforms.win.notification
@@ -21,7 +23,11 @@ jobs:
           --hidden-import=winsound
           --hidden-import=keyboard
           claude_notch/__main__.py
+      - name: Generate checksums
+        run: certutil -hashfile dist/ClawdNotch.exe SHA256 > dist/ClawdNotch.exe.sha256
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/ClawdNotch.exe
+          files: |
+            dist/ClawdNotch.exe
+            dist/ClawdNotch.exe.sha256
           generate_release_notes: true

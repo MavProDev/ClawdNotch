@@ -138,7 +138,7 @@ def create_launcher(project_dir: Path, pythonw: str):
     # Write the launcher script
     launcher = CONFIG_DIR / "launcher.pyw"
     launcher.write_text('''"""Claude Notch launcher — points to wherever the project currently lives."""
-import json, subprocess, sys
+import json, subprocess, sys, os
 from pathlib import Path
 
 CONFIG = Path.home() / ".claude-notch" / "config.json"
@@ -149,8 +149,14 @@ def main():
     with open(CONFIG) as f:
         config = json.load(f)
     install_path = config.get("install_path", "")
+    # Validate install_path is a real local directory (not UNC, not empty)
+    if not install_path or install_path.startswith("\\\\\\\\") or install_path.startswith("//"):
+        raise SystemExit("Invalid install_path in config.json.")
+    if not os.path.isabs(install_path) or not os.path.isdir(install_path):
+        raise SystemExit(f"install_path does not exist: {install_path}")
     pkg_dir = Path(install_path) / "claude_notch"
-    if not pkg_dir.is_dir():
+    init_file = pkg_dir / "__init__.py"
+    if not pkg_dir.is_dir() or not init_file.is_file():
         raise SystemExit(
             f"claude_notch/ package not found at {pkg_dir}.\\n"
             f"If you moved the folder, re-run create_shortcut.py from the new location."

@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 def test_app_creates_without_crash(qapp):
     """Create ClaudeNotch widget, show it, close it — must not crash."""
-    from PyQt6.QtWidgets import QApplication
-    from PyQt6.QtCore import QRect
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import QRect
 
     # Build lightweight stubs for every dependency
     from claude_notch.usage import UsageTracker, SparklineTracker, StreakTracker, TodoManager

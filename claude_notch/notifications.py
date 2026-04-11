@@ -83,7 +83,7 @@ class NotificationManager:
 
     def _show_clawd_toast(self, title, message, timeout, pid, ntype):
         """Show a ClawdToast on the main thread. Safe to call from any thread."""
-        from PyQt6.QtCore import QTimer
+        from PySide6.QtCore import QTimer
         # QTimer.singleShot(0, ...) schedules on the main thread's event loop
         QTimer.singleShot(0, lambda: self._create_toast(title, message, timeout, pid, ntype))
 

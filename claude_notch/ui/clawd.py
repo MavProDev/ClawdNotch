@@ -8,8 +8,8 @@ used by every other ui sub-module.
 import math
 import time
 
-from PyQt6.QtCore import QRectF
-from PyQt6.QtGui import QPainter, QColor, QBrush
+from PySide6.QtCore import QRectF
+from PySide6.QtGui import QPainter, QColor, QBrush
 
 from claude_notch.config import C
 
