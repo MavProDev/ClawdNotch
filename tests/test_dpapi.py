@@ -35,7 +35,7 @@ def test_dpapi_decrypt_invalid_data():
 
     corrupted = "dpapi:not-valid-base64!!!"
     result = _dpapi_decrypt(corrupted)
-    assert result == corrupted  # falls back to returning as-is
+    assert result == ""  # returns empty string instead of ciphertext blob (security fix)
 
 
 def test_config_manager_encrypts_on_migrate(tmp_config_dir):

@@ -202,7 +202,7 @@ def _dpapi_encrypt(plaintext: str) -> str:
 
     DPAPI ties encryption to the current Windows user account — only the same
     user on the same machine can decrypt. No key management needed.
-    Falls back to plaintext on non-Windows or if DPAPI fails.
+    Logs a warning and returns plaintext with marker prefix on failure.
     """
     try:
         data = plaintext.encode("utf-8")
@@ -215,9 +215,11 @@ def _dpapi_encrypt(plaintext: str) -> str:
             encrypted = ctypes.string_at(blob_out.pbData, blob_out.cbData)
             ctypes.windll.kernel32.LocalFree(blob_out.pbData)
             return "dpapi:" + base64.b64encode(encrypted).decode("ascii")
-    except Exception:
-        pass
-    return plaintext  # fallback: return as-is
+        else:
+            print("[SECURITY] DPAPI encryption failed — CryptProtectData returned False", file=sys.stderr)
+    except Exception as e:
+        print(f"[SECURITY] DPAPI encryption failed: {e}", file=sys.stderr)
+    return plaintext  # fallback: return as-is (logged above)
 
 
 def _dpapi_decrypt(stored: str) -> str:
@@ -233,12 +235,16 @@ def _dpapi_decrypt(stored: str) -> str:
         if ctypes.windll.crypt32.CryptUnprotectData(
             ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
         ):
-            plaintext = ctypes.string_at(blob_out.pbData, blob_out.cbData).decode("utf-8")
-            ctypes.windll.kernel32.LocalFree(blob_out.pbData)
-            return plaintext
-    except Exception:
-        pass
-    return stored  # fallback: return as-is (may be corrupted)
+            try:
+                plaintext = ctypes.string_at(blob_out.pbData, blob_out.cbData).decode("utf-8")
+                return plaintext
+            finally:
+                ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+        else:
+            print("[SECURITY] DPAPI decryption failed — CryptUnprotectData returned False", file=sys.stderr)
+    except Exception as e:
+        print(f"[SECURITY] DPAPI decryption failed: {e}", file=sys.stderr)
+    return ""  # return empty string instead of ciphertext blob
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

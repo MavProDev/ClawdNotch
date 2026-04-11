@@ -159,9 +159,12 @@ def main():
         hs.wait(2000)
         sm.save_state()
         tracker.flush()
-        # BUG FIX #3: Removed dead code that wrote was_expanded during cleanup
-        # (was: config.set("was_expanded", notch._expanded, save_now=False))
         config.flush()
+        if HAS_KEYBOARD:
+            try:
+                kb_module.unhook_all()
+            except Exception:
+                pass
         release_lock()
 
     app.aboutToQuit.connect(cleanup)

@@ -503,7 +503,11 @@ def export_usage_report(tracker, config, fmt="markdown"):
         print(f"[Export] Failed to write report: {e}", file=sys.stderr)
         # Fall back to home directory
         out = Path.home() / f"claude-notch-report-{ts}.{ext}"
-        out.write_text(content, encoding="utf-8")
+        try:
+            out.write_text(content, encoding="utf-8")
+        except (OSError, PermissionError) as e2:
+            print(f"[Export] Fallback write also failed: {e2}", file=sys.stderr)
+            return ""
     return str(out)
 
 

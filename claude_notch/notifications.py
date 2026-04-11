@@ -94,7 +94,7 @@ class NotificationManager:
 
     def _play_sound(self, sound_type):
         custom = self.config.get(f"custom_sound_{sound_type}", "")
-        if custom and os.path.exists(custom):
+        if custom and not custom.startswith("\\\\") and not custom.startswith("//") and os.path.exists(custom):
             try: winsound.PlaySound(custom, winsound.SND_FILENAME | winsound.SND_NODEFAULT); return
             except Exception: pass
         try:
