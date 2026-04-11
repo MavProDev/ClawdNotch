@@ -54,13 +54,13 @@ class NotificationManager:
         if self.config.get("dnd_mode", False): return True
         return self.config.get("auto_mute_when_focused", True) and _is_terminal_focused()
 
-    def notify_task_complete(self, project, summary):
+    def notify_task_complete(self, project, summary, pid=0):
         if self.history and self.config.get("notification_history_enabled", True):
             self.history.add(f"Claude Code — {project}", summary[:200], "completion")
         if self.config.get("sound_enabled") and HAS_SOUND and not self._should_mute():
             threading.Thread(target=self._play_sound, args=("completion",), daemon=True).start()
         if self.config.get("toast_enabled") and not self.config.get("dnd_mode"):
-            self._show_clawd_toast(f"Claude Code — {project}", summary[:200], 6, 0, "completion")
+            self._show_clawd_toast(f"Claude Code — {project}", summary[:200], 6, pid, "completion")
 
     def notify_needs_attention(self, project, pid=0):
         if self.history and self.config.get("notification_history_enabled", True):

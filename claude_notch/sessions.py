@@ -204,7 +204,7 @@ class EmotionEngine:
 
 class SessionManager(QObject):
     session_updated = Signal()
-    task_completed = Signal(str, str)
+    task_completed = Signal(str, str, int)  # project_name, summary, pid
     needs_attention = Signal(str, int)  # project_name, pid
     budget_alert = Signal(str)
     achievement = Signal(str)  # achievement message
@@ -300,7 +300,7 @@ class SessionManager(QObject):
         sm = str(event.get("summary", "Task completed"))[:500]
         s.tasks_completed.append({"summary": sm, "time": datetime.now().strftime("%Y-%m-%d %H:%M"), "status": "completed"})
         s.tasks_completed = s.tasks_completed[-20:]
-        self.task_completed.emit(s.project_name[:200], sm)
+        self.task_completed.emit(s.project_name[:200], sm, s.pid)
 
     def _on_session_end(self, s, event):
         s.state = "completed"
