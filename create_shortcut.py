@@ -174,15 +174,20 @@ if __name__ == "__main__":
     return launcher, icon_dst
 
 
+def _ps_escape(s: str) -> str:
+    """Escape a string for safe embedding in PowerShell double-quoted strings."""
+    return str(s).replace('`', '``').replace('"', '`"').replace('$', '`$').replace('#', '`#')
+
+
 def create_windows_shortcut(target, shortcut_path, icon_path, args=""):
     """Create a .lnk shortcut using PowerShell (no COM dependencies)."""
     ps_script = f'''
 $ws = New-Object -ComObject WScript.Shell
-$sc = $ws.CreateShortcut("{shortcut_path}")
-$sc.TargetPath = "{target}"
-$sc.Arguments = '"{args}"'
-$sc.WorkingDirectory = "{Path(args).parent if args else ""}"
-$sc.IconLocation = "{icon_path},0"
+$sc = $ws.CreateShortcut("{_ps_escape(shortcut_path)}")
+$sc.TargetPath = "{_ps_escape(target)}"
+$sc.Arguments = '"{_ps_escape(args)}"'
+$sc.WorkingDirectory = "{_ps_escape(Path(args).parent if args else "")}"
+$sc.IconLocation = "{_ps_escape(icon_path)},0"
 $sc.Description = "Claude Notch — Desktop Overlay by @ReelDad"
 $sc.WindowStyle = 7
 $sc.Save()

@@ -59,35 +59,56 @@ _process_cache_lock = threading.Lock()
 # Single-instance lock
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def acquire_lock():
-    """Acquire a file-based single-instance lock.
+_instance_mutex = None
 
-    BUG FIX #8 (documented): This implementation has a known TOCTOU
-    (time-of-check-to-time-of-use) race condition.  Between the moment we
-    check whether the lock file exists / the old PID is alive and the
-    moment we write our own PID, another process could do the same check
-    and also conclude the lock is free.  In practice this is unlikely
-    because the window is very small and the overlay is typically launched
-    by a single user action, but a fully robust solution would use an OS
-    mutex (e.g. CreateMutex on Windows) or advisory file locking.
+
+def acquire_lock():
+    """Acquire a Windows named mutex for single-instance enforcement.
+
+    Uses CreateMutexW instead of file-based locking to avoid TOCTOU race.
+    Falls back to file-based lock if mutex creation fails.
     """
+    global _instance_mutex
     try:
-        if LOCK_FILE.exists():
-            try:
-                old_pid = int(LOCK_FILE.read_text().strip())
-                h = ctypes.windll.kernel32.OpenProcess(0x1000, False, old_pid)
-                if h:
-                    ctypes.windll.kernel32.CloseHandle(h)
-                    return False
-            except Exception:
-                pass
-        LOCK_FILE.write_text(str(os.getpid()))
+        mutex = ctypes.windll.kernel32.CreateMutexW(None, True, "ClaudeNotch_SingleInstance")
+        last_error = ctypes.windll.kernel32.GetLastError()
+        if last_error == 183:  # ERROR_ALREADY_EXISTS
+            ctypes.windll.kernel32.CloseHandle(mutex)
+            return False
+        _instance_mutex = mutex
+        # Also write PID file for backward compat and process identification
+        try:
+            LOCK_FILE.write_text(str(os.getpid()))
+        except Exception:
+            pass
         return True
     except Exception:
-        return True
+        # Fallback to file-based lock if mutex API unavailable
+        try:
+            if LOCK_FILE.exists():
+                try:
+                    old_pid = int(LOCK_FILE.read_text().strip())
+                    h = ctypes.windll.kernel32.OpenProcess(0x1000, False, old_pid)
+                    if h:
+                        ctypes.windll.kernel32.CloseHandle(h)
+                        return False
+                except Exception:
+                    pass
+            LOCK_FILE.write_text(str(os.getpid()))
+            return True
+        except Exception:
+            return False  # fail-closed
 
 
 def release_lock():
+    global _instance_mutex
+    if _instance_mutex:
+        try:
+            ctypes.windll.kernel32.ReleaseMutex(_instance_mutex)
+            ctypes.windll.kernel32.CloseHandle(_instance_mutex)
+            _instance_mutex = None
+        except Exception:
+            pass
     try:
         LOCK_FILE.unlink(missing_ok=True)
     except Exception:
