@@ -23,8 +23,8 @@ from PySide6.QtGui import (
 from claude_notch import __version__
 from claude_notch.config import C, SPINNER_FRAMES
 from claude_notch.usage import export_usage_report
-from claude_notch.system_monitor import SystemMonitor, _focus_window_by_pid
-from claude_notch.ui.clawd import draw_clawd, _with_alpha, _status_colors, _lerp_color
+from claude_notch.system_monitor import SystemMonitor, _focus_window_by_pid, _focus_window_by_project
+from claude_notch.ui.clawd import draw_clawd, _with_alpha, _lerp_color
 from claude_notch.ui.toast import show_clawd_toast
 from claude_notch.ui.settings import open_settings_dialog
 
@@ -428,8 +428,11 @@ class ClaudeNotch(QWidget):
                 for rect, sess in self._session_click_rects:
                     if rect.contains(e.pos().x(), e.pos().y()):
                         if self.config.get("click_to_focus", True):
+                            # Try project name match first (most reliable), then PID
+                            if sess.project_name and sess.project_name not in ("unknown",):
+                                _focus_window_by_project(sess.project_name)
+                                return
                             if not sess.pid:
-                                # PID not yet known — trigger a scan and retry
                                 self.sessions.scan_processes()
                             if sess.pid:
                                 _focus_window_by_pid(sess.pid)
@@ -1015,7 +1018,6 @@ class ClaudeNotch(QWidget):
         top += 12
 
         # ── SESSION CARDS ──
-        avg_min = self.sessions.avg_session_minutes
         for si, s in enumerate(ac[:self.config.get("max_sessions_shown", 6)]):
             card_h = 42
             card_rect = QRectF(L, top, cw, card_h)

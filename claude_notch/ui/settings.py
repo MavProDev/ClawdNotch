@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QRadioButton, QMessageBox,
 )
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon
 
 from claude_notch import __version__
 from claude_notch.config import (
@@ -33,6 +34,14 @@ class SettingsDialog(QDialog):
         self.config = config
         self.setWindowTitle("ClawdNotch \u2014 Settings")
         self.setMinimumSize(500, 520)
+        # Clawd icon for the window
+        from claude_notch.ui.clawd import draw_clawd
+        pix = QPixmap(32, 32)
+        pix.fill(QColor(0, 0, 0, 0))
+        _p = QPainter(pix)
+        draw_clawd(_p, 3, 2, 2.5, emotion="neutral")
+        _p.end()
+        self.setWindowIcon(QIcon(pix))
         self.setStyleSheet(
             "QDialog{background:#121216;color:#f0ece8;}QLabel{color:#9b948e;font-size:12px;}"
             "QLineEdit{background:#1c1c24;border:1px solid #2c2c34;color:#f0ece8;padding:8px;border-radius:4px;font-size:12px;}"
@@ -187,21 +196,12 @@ class SettingsDialog(QDialog):
         self.click_focus = QCheckBox("Click session to focus terminal")
         self.click_focus.setChecked(config.get("click_to_focus", True))
         L.addWidget(self.click_focus)
-        self.sparkline = QCheckBox("Sparkline activity graph")
-        self.sparkline.setChecked(config.get("sparkline_enabled", True))
-        L.addWidget(self.sparkline)
-        self.clipboard = QCheckBox("Click to copy project path")
+        self.clipboard = QCheckBox("Click to copy project path (when focus unavailable)")
         self.clipboard.setChecked(config.get("clipboard_on_click", True))
         L.addWidget(self.clipboard)
-        self.sess_est = QCheckBox("Session time estimates")
-        self.sess_est.setChecked(config.get("session_estimate_enabled", True))
-        L.addWidget(self.sess_est)
-        self.streaks_cb = QCheckBox("Coding streaks & stats")
+        self.streaks_cb = QCheckBox("Show coding streak in panel")
         self.streaks_cb.setChecked(config.get("streaks_enabled", True))
         L.addWidget(self.streaks_cb)
-        self.sys_res = QCheckBox("System resources (CPU/RAM)")
-        self.sys_res.setChecked(config.get("system_resources_enabled", True))
-        L.addWidget(self.sys_res)
         model_h = QHBoxLayout()
         model_h.addWidget(QLabel("Default model:"))
         self.model_combo2 = QComboBox()
@@ -213,9 +213,6 @@ class SettingsDialog(QDialog):
         model_h.addWidget(self.model_combo2)
         model_h.addStretch()
         L.addLayout(model_h)
-        self.multi_mon = QCheckBox("Multi-monitor support")
-        self.multi_mon.setChecked(config.get("multi_monitor", False))
-        L.addWidget(self.multi_mon)
         L.addSpacing(4)
 
         # -- Budget --
@@ -407,12 +404,8 @@ class SettingsDialog(QDialog):
             "mini_mode": self.mini_mode.isChecked(),
             "default_model": self.model_combo2.currentData() or "sonnet",
             "click_to_focus": self.click_focus.isChecked(),
-            "sparkline_enabled": self.sparkline.isChecked(),
             "clipboard_on_click": self.clipboard.isChecked(),
-            "session_estimate_enabled": self.sess_est.isChecked(),
             "streaks_enabled": self.streaks_cb.isChecked(),
-            "system_resources_enabled": self.sys_res.isChecked(),
-            "multi_monitor": self.multi_mon.isChecked(),
             "budget_daily": _float(self.budget_d.text()),
             "budget_monthly": _float(self.budget_m.text()),
             "export_format": self.export_fmt.currentData() or "markdown",

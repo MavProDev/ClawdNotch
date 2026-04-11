@@ -60,7 +60,7 @@ class NotificationManager:
         if self.config.get("sound_enabled") and HAS_SOUND and not self._should_mute():
             threading.Thread(target=self._play_sound, args=("completion",), daemon=True).start()
         if self.config.get("toast_enabled") and not self.config.get("dnd_mode"):
-            self._show_clawd_toast(f"Claude Code — {project}", summary[:200], 6, pid, "completion")
+            self._show_clawd_toast(f"Claude Code — {project}", summary[:200], 6, pid, "completion", project_name=project)
 
     def notify_needs_attention(self, project, pid=0):
         if self.history and self.config.get("notification_history_enabled", True):
@@ -68,7 +68,7 @@ class NotificationManager:
         if self.config.get("sound_enabled") and HAS_SOUND and not self._should_mute():
             threading.Thread(target=self._play_sound, args=("attention",), daemon=True).start()
         if self.config.get("toast_enabled") and not self.config.get("dnd_mode"):
-            self._show_clawd_toast(f"Claude Code — {project}", "Needs your attention!", 10, pid, "attention")
+            self._show_clawd_toast(f"Claude Code — {project}", "Needs your attention!", 10, pid, "attention", project_name=project)
 
     def notify_budget_alert(self, message):
         if self.history: self.history.add("Budget Alert", message, "budget")
@@ -81,16 +81,15 @@ class NotificationManager:
         if not self.config.get("dnd_mode"):
             self._show_clawd_toast("Achievement Unlocked!", message, 8, 0, "completion")
 
-    def _show_clawd_toast(self, title, message, timeout, pid, ntype):
+    def _show_clawd_toast(self, title, message, timeout, pid, ntype, project_name=""):
         """Show a ClawdToast on the main thread. Safe to call from any thread."""
         from PySide6.QtCore import QTimer
-        # QTimer.singleShot(0, ...) schedules on the main thread's event loop
-        QTimer.singleShot(0, lambda: self._create_toast(title, message, timeout, pid, ntype))
+        QTimer.singleShot(0, lambda: self._create_toast(title, message, timeout, pid, ntype, project_name))
 
-    def _create_toast(self, title, message, timeout, pid, ntype):
+    def _create_toast(self, title, message, timeout, pid, ntype, project_name=""):
         """Actually create the toast widget. Must run on the main Qt thread."""
         from claude_notch.ui import show_clawd_toast
-        show_clawd_toast(title, message, timeout, pid, ntype)
+        show_clawd_toast(title, message, timeout, pid, ntype, project_name=project_name)
 
     def _play_sound(self, sound_type):
         custom = self.config.get(f"custom_sound_{sound_type}", "")
