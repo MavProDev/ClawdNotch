@@ -474,10 +474,14 @@ class ClaudeNotch(QWidget):
             n.setX(max(0, min(n.x(), s.width() - self.width())))
             n.setY(max(0, min(n.y(), s.height() - self.height())))
             self.move(n)
+            # Only repaint if edge or orientation actually changed — avoids
+            # forcing a full paintEvent on every pixel of mouse movement
+            prev_edge, prev_ori = self._edge, self._ori
             self._det_edge()
-            if not self._expanded:
-                self.setFixedSize(self.nw, self.nh)
-            self.update()
+            if self._edge != prev_edge or self._ori != prev_ori:
+                if not self._expanded:
+                    self.setFixedSize(self.nw, self.nh)
+                self.update()
         elif self._expanded and self._anim_p >= 1.0:
             # Track hovered session row for highlight
             old_hover = self._hover_row_idx
