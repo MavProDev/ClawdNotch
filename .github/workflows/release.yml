@@ -25,7 +25,7 @@ jobs:
           claude_notch/__main__.py
       - name: Generate checksums
         run: certutil -hashfile dist/ClawdNotch.exe SHA256 > dist/ClawdNotch.exe.sha256
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/ClawdNotch.exe
