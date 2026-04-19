@@ -38,3 +38,9 @@ env/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Claude Code internal artifacts — never commit
+.superpowers/
+.claude/
+docs/superpowers/
+docs/handoffs/
